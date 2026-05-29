@@ -1,0 +1,5487 @@
+(() => {
+  const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+  // ===========================================================================
+  // Глобальные стили: доступность (фокус с клавиатуры), уважение к
+  // prefers-reduced-motion, плавная обратная связь при нажатии, размер тап-зон.
+  // Внедряется один раз при загрузке — не ломает существующие inline-стили.
+  // ===========================================================================
+  (function injectGlobalStyles() {
+    if (document.getElementById("ux-global-styles")) return;
+    const css = `
+      * { -webkit-tap-highlight-color: transparent; }
+      button { transition: transform .08s ease, filter .12s ease, background .15s ease; touch-action: manipulation; }
+      button:active { transform: scale(0.96); }
+      :focus { outline: none; }
+      :focus-visible { outline: 2px solid #C97A3D; outline-offset: 2px; border-radius: 6px; }
+      @keyframes uxPillPop { 0% { transform: scale(1); } 45% { transform: scale(1.28); } 100% { transform: scale(1); } }
+      @keyframes uxFadeSlide { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      .ux-pop { animation: uxPillPop .32s cubic-bezier(.34,1.56,.64,1); }
+      .ux-enter { animation: uxFadeSlide .32s ease both; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+        button:active { transform: none; }
+      }
+    `;
+    const tag = document.createElement("style");
+    tag.id = "ux-global-styles";
+    tag.textContent = css;
+    document.head.appendChild(tag);
+  })();
+  // Палитра «лиса в траве» — приглушённые тёплые тона, чтобы перекликалось с иллюстрациями.
+  // Имена ключей (olive/sand/bark) оставлены как было — они используются по всему коду.
+  // Поменялись только значения, чтобы не переписывать тысячи ссылок.
+  const C = {
+    bg: "#F7F2E8",         // основной фон — тёплый кремовый
+    bgWarm: "#F0E8D6",     // фон шапок и hover-состояний
+    card: "#FFFFFF",
+    border: "#E0D6C4",     // лёгкие границы
+    borderM: "#C4B89E",    // акцентные границы
+    // Основной акцент — лисий оранжевый
+    olive: "#C97A3D",      // главный
+    oliveM: "#D88E54",     // светлее
+    oliveSoft: "#FCEEDF",  // подложка под акценты
+    oliveDeep: "#993D00",  // глубокий для текста
+    // Травянисто-оливковый — второй акцент
+    sand: "#7A8B5C",       // главный зелёный
+    sandSoft: "#E2E8D0",   // подложка
+    sandDeep: "#3E4A1F",   // глубокий
+    // Тёплый коричневый — третий акцент, для нейтральных вещей
+    sage: "#8A7B5C",
+    sageSoft: "#EDE4D0",
+    bark: "#7A6A52",
+    barkSoft: "#EDDED0",
+    // Текст
+    text: "#2E2418",       // основной
+    textM: "#7A6A52",      // приглушённый
+    textL: "#A89880",      // подсказки
+    white: "#FFFFFF",
+    // Семантика
+    ok: "#5A6B42",         // зелёный — для «можно»
+    warn: "#A04830",       // тёплый красно-коричневый, не яркий красный
+    warnSoft: "#FCEEDF",   // подложка предупреждения (та же что oliveSoft — тёплая)
+    info: "#5A6B82",       // тёплый синий — для информации
+    infoSoft: "#E0E4EC",
+    // Месячные/цикл — розовый
+    pink: "#A8525E",
+    pinkSoft: "#F4DCE0",
+    // Тени убраны — только бордеры
+    shadow: "none",
+    shadowM: "none"
+  };
+  const YT_LINKS = {
+    glute_bridge: "https://www.youtube.com/watch?v=OUgsJ8-Vi0E",
+    cable_kickback: "https://www.youtube.com/watch?v=8rFBN0bSm1U",
+    leg_press: "https://www.youtube.com/watch?v=IZxyjW7MPJQ",
+    plank: "https://www.youtube.com/watch?v=pSHjTRCQxIw",
+    dead_bug: "https://www.youtube.com/watch?v=4XLEnwUr1d8",
+    seated_row: "https://www.youtube.com/watch?v=GZbfZ033f74",
+    lat_pulldown: "https://www.youtube.com/watch?v=CAwf7n6Luuc",
+    hyperext: "https://www.youtube.com/watch?v=ph3pddpKzzw",
+    reverse_fly: "https://www.youtube.com/watch?v=ttvASm4fGFo",
+    bird_dog: "https://www.youtube.com/watch?v=wiFNA3sqjCA",
+    squat: "https://www.youtube.com/watch?v=IGRDDBOVmDQ",
+    lunge: "https://www.youtube.com/watch?v=D7KaRcUTQeE",
+    rdl: "https://www.youtube.com/watch?v=jEy_czb3RKA",
+    adductor: "https://www.youtube.com/watch?v=3GFH6Yf_PkE",
+    calf_raise: "https://www.youtube.com/watch?v=gwLzBJYoWlQ",
+    vacuum: "https://www.youtube.com/watch?v=d-G4TuWwmvg",
+    cat_cow: "https://www.youtube.com/watch?v=kqnua4rHVVA",
+    fire_hydrant: "https://www.youtube.com/watch?v=Bmjxp-1nsiY",
+    side_plank: "https://www.youtube.com/watch?v=K1ExSvBPdS8"
+  };
+  function YTLink({ svgKey, name }) {
+    const url = YT_LINKS[svgKey];
+    if (!url) return null;
+    return /* @__PURE__ */ React.createElement("a", { href: url, target: "_blank", rel: "noopener noreferrer", style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "7px 13px",
+      borderRadius: 8,
+      background: "#FF0000",
+      color: "#fff",
+      fontSize: 12,
+      fontWeight: 700,
+      textDecoration: "none",
+      marginBottom: 10
+    } }, "\u25B6 \u0421\u043C\u043E\u0442\u0440\u0435\u0442\u044C \u043D\u0430 YouTube \u2014 ", name);
+  }
+  const EX_QA = {
+    weight: "\u041D\u0430\u0447\u043D\u0438 \u0441 \u0432\u0435\u0441\u0430, \u043F\u0440\u0438 \u043A\u043E\u0442\u043E\u0440\u043E\u043C \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 2\u20133 \u043F\u043E\u0432\u0442\u043E\u0440\u0430 \u0441\u043B\u043E\u0436\u043D\u044B\u0435, \u043D\u043E \u0442\u0435\u0445\u043D\u0438\u043A\u0430 \u043D\u0435 \u043B\u043E\u043C\u0430\u0435\u0442\u0441\u044F. \u041B\u0443\u0447\u0448\u0435 \u043C\u0435\u043D\u044C\u0448\u0435 \u2014 \u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E.",
+    feel: "\u0414\u043E\u043B\u0436\u043D\u0430 \u0447\u0443\u0432\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C \u0446\u0435\u043B\u0435\u0432\u0443\u044E \u043C\u044B\u0448\u0446\u0443 \u2014 \u0436\u0436\u0435\u043D\u0438\u0435 \u0438\u043B\u0438 \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435. \u0415\u0441\u043B\u0438 \u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C \u0434\u0440\u0443\u0433\u043E\u0435 \u043C\u0435\u0441\u0442\u043E \u2014 \u0447\u0442\u043E-\u0442\u043E \u043D\u0435 \u0442\u0430\u043A \u0441 \u0442\u0435\u0445\u043D\u0438\u043A\u043E\u0439.",
+    back: "\u0411\u043E\u043B\u044C \u0432 \u0441\u043F\u0438\u043D\u0435 = \u0441\u0442\u043E\u043F. \u0423\u043C\u0435\u043D\u044C\u0448\u0438 \u0432\u0435\u0441, \u043F\u0440\u043E\u0432\u0435\u0440\u044C \u0442\u0435\u0445\u043D\u0438\u043A\u0443. \u041F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u043E\u0441\u043E\u0431\u0435\u043D\u043D\u043E \u0432\u0430\u0436\u043D\u043E \u043D\u0435 \u0447\u0435\u0440\u0435\u0437 \u0431\u043E\u043B\u044C.",
+    breath: "\u0412\u044B\u0434\u043E\u0445 \u043D\u0430 \u0443\u0441\u0438\u043B\u0438\u0438 (\u043D\u0430 \u043F\u043E\u0434\u044A\u0451\u043C\u0435/\u0441\u0436\u0430\u0442\u0438\u0438), \u0432\u0434\u043E\u0445 \u043D\u0430 \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0435. \u041D\u0438\u043A\u043E\u0433\u0434\u0430 \u043D\u0435 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0439 \u0434\u044B\u0445\u0430\u043D\u0438\u0435.",
+    rest: "\u041C\u0435\u0436\u0434\u0443 \u043F\u043E\u0434\u0445\u043E\u0434\u0430\u043C\u0438 60\u201390 \u0441\u0435\u043A. \u0415\u0441\u043B\u0438 \u043D\u0435 \u0443\u0441\u043F\u0435\u043B\u0430 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\u0441\u044F \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438 \u0435\u0449\u0451 30 \u0441\u0435\u043A.",
+    sets: "4 \u043F\u043E\u0434\u0445\u043E\u0434\u0430 \u043F\u043E 12\u201315 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u0439 \u0434\u043B\u044F \u044F\u0433\u043E\u0434\u0438\u0446 \u0438 \u043D\u043E\u0433. 3 \u043F\u043E\u0434\u0445\u043E\u0434\u0430 \u043F\u043E 12 \u2014 \u0434\u043B\u044F \u0441\u043F\u0438\u043D\u044B \u0438 \u043A\u043E\u0440\u0430.",
+    progress: "\u0423\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0439 \u0432\u0435\u0441 \u043A\u043E\u0433\u0434\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 2 \u043F\u043E\u0432\u0442\u043E\u0440\u0430 \u0441\u0442\u0430\u043B\u0438 \u043B\u0451\u0433\u043A\u0438\u043C\u0438. \u041E\u0431\u044B\u0447\u043D\u043E \u044D\u0442\u043E \u0440\u0430\u0437 \u0432 2 \u043D\u0435\u0434\u0435\u043B\u0438.",
+    soreness: "\u041B\u0451\u0433\u043A\u0430\u044F \u0431\u043E\u043B\u044C \u0432 \u043C\u044B\u0448\u0446\u0430\u0445 \u043D\u0430 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u0434\u0435\u043D\u044C \u2014 \u043D\u043E\u0440\u043C\u0430\u043B\u044C\u043D\u043E. \u041E\u0441\u0442\u0440\u0430\u044F \u0431\u043E\u043B\u044C \u0432 \u0441\u0443\u0441\u0442\u0430\u0432\u0430\u0445 \u2014 \u043D\u0435\u0442.",
+    pelvic: "\u041F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438: 3 \u043C\u0438\u043D \u0434\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u0434\u044B\u0445\u0430\u043D\u0438\u044F \u043B\u0451\u0436\u0430. \u0422\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u044F\u0435\u0442\u0441\u044F \u043D\u0430 \u0432\u0434\u043E\u0445\u0435.",
+    scoliosis: "\u0418\u0437\u0431\u0435\u0433\u0430\u0439 \u043E\u0441\u0435\u0432\u044B\u0445 \u043D\u0430\u0433\u0440\u0443\u0437\u043E\u043A \u0441\u043E \u0448\u0442\u0430\u043D\u0433\u043E\u0439 \u043D\u0430 \u043F\u043B\u0435\u0447\u0430\u0445. \u041F\u0440\u0435\u0434\u043F\u043E\u0447\u0438\u0442\u0430\u0439 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440 \u0421\u043C\u0438\u0442\u0430, \u0433\u043E\u0440\u0438\u0437\u043E\u043D\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u0442\u044F\u0433\u0438, \u043F\u043B\u0430\u043D\u043A\u0438."
+  };
+  function AIAssistant({ exName, muscle, steps, feel }) {
+    const [open, setOpen] = useState(false);
+    const [answer, setAnswer] = useState(null);
+    const QUICK = [
+      { q: "\u041A\u0430\u043A\u043E\u0439 \u0432\u0435\u0441 \u0432\u044B\u0431\u0440\u0430\u0442\u044C?", key: "weight" },
+      { q: "\u0413\u0434\u0435 \u0434\u043E\u043B\u0436\u043D\u0430 \u0447\u0443\u0432\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C?", key: "feel" },
+      { q: "\u0411\u043E\u043B\u044C \u0432 \u0441\u043F\u0438\u043D\u0435 \u2014 \u0447\u0442\u043E \u0434\u0435\u043B\u0430\u0442\u044C?", key: "back" },
+      { q: "\u041A\u0430\u043A \u0434\u044B\u0448\u0430\u0442\u044C?", key: "breath" },
+      { q: "\u0421\u043A\u043E\u043B\u044C\u043A\u043E \u043E\u0442\u0434\u044B\u0445\u0430\u0442\u044C \u043C\u0435\u0436\u0434\u0443 \u043F\u043E\u0434\u0445\u043E\u0434\u0430\u043C\u0438?", key: "rest" },
+      { q: "\u0421\u043A\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0434\u0445\u043E\u0434\u043E\u0432 \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u0439?", key: "sets" },
+      { q: "\u041A\u043E\u0433\u0434\u0430 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0442\u044C \u0432\u0435\u0441?", key: "progress" },
+      { q: "\u0411\u043E\u043B\u044F\u0442 \u043C\u044B\u0448\u0446\u044B \u2014 \u043D\u043E\u0440\u043C\u0430?", key: "soreness" }
+    ];
+    return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      setOpen(!open);
+      setAnswer(null);
+    }, style: {
+      width: "100%",
+      padding: "9px 12px",
+      borderRadius: 9,
+      background: open ? C.oliveSoft : C.bgWarm,
+      border: `1.5px solid ${open ? C.olive : C.border}`,
+      cursor: "pointer",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      fontFamily: "inherit"
+    } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 24, height: 24, borderRadius: 7, background: C.olive, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 } }, "💬"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.oliveDeep } }, "\u0412\u043E\u043F\u0440\u043E\u0441\u044B \u043F\u043E \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u044E")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textL } }, open ? "\u25B2" : "\u25BC")), open && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, background: C.card, borderRadius: 10, border: `1.5px solid ${C.olive}33`, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 12px", borderBottom: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5 } }, QUICK.map((item, i) => /* @__PURE__ */ React.createElement("button", { key: i, onClick: () => setAnswer(item), style: {
+      padding: "5px 9px",
+      borderRadius: 7,
+      border: `1px solid ${answer?.key === item.key ? C.olive : C.border}`,
+      background: answer?.key === item.key ? C.oliveSoft : C.bg,
+      cursor: "pointer",
+      fontSize: 11,
+      color: answer?.key === item.key ? C.oliveDeep : C.textM,
+      fontFamily: "inherit"
+    } }, item.q)))), answer && /* @__PURE__ */ React.createElement("div", { style: { padding: "12px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.olive, marginBottom: 5 } }, answer.q), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.text, lineHeight: 1.65 } }, EX_QA[answer.key]), answer.key === "feel" && feel && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, padding: "8px 10px", background: C.bgWarm, borderRadius: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.olive } }, "\u2713 ", exName, ": ", feel.good), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.warn, marginTop: 3 } }, "\u2717 \u041D\u0435 \u0434\u043E\u043B\u0436\u043D\u0430: ", feel.bad)))));
+  }
+  const DAYS = [
+    {
+      id: "A",
+      name: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B + \u041A\u043E\u0440",
+      emoji: "🍑",
+      clr: C.olive,
+      clrS: C.oliveSoft,
+      clrD: C.oliveDeep,
+      totalMin: 75,
+      intensity: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F",
+      warmup: [
+        {
+          name: "\u0425\u043E\u0434\u044C\u0431\u0430 \u043D\u0430 \u0431\u0435\u0433\u043E\u0432\u043E\u0439 \u0434\u043E\u0440\u043E\u0436\u043A\u0435",
+          dur: "5 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u0422\u0435\u043C\u043F 5\u20136 \u043A\u043C/\u0447, \u043D\u0430\u043A\u043B\u043E\u043D 2\u20133%", "\u0421\u043F\u0438\u043D\u0430 \u043F\u0440\u044F\u043C\u0430\u044F, \u043F\u043B\u0435\u0447\u0438 \u0440\u0430\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u044B", "\u041D\u0435 \u0434\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u043F\u043E\u0440\u0443\u0447\u043D\u0438 \u2014 \u043F\u0443\u0441\u0442\u044C \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u0440\u0430\u0431\u043E\u0442\u0430\u044E\u0442", "\u0426\u0435\u043B\u044C: \u0440\u0430\u0437\u043E\u0433\u0440\u0435\u0442\u044C \u0441\u0443\u0441\u0442\u0430\u0432\u044B \u0438 \u0441\u0435\u0440\u0434\u0446\u0435"]
+        },
+        {
+          name: "\u042F\u0433\u043E\u0434\u0438\u0447\u043D\u044B\u0439 \u043C\u043E\u0441\u0442\u0438\u043A \u0431\u0435\u0437 \u0432\u0435\u0441\u0430",
+          dur: "2 \xD7 15 \u043F\u043E\u0432\u0442.",
+          svgKey: "glute_bridge",
+          body: ["\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435, \u043D\u043E\u0433\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u044B, \u0441\u0442\u043E\u043F\u044B \u043D\u0430 \u0448\u0438\u0440\u0438\u043D\u0435 \u0431\u0451\u0434\u0435\u0440", "\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0439 \u0442\u0430\u0437 \u0432\u0432\u0435\u0440\u0445 \u2014 \u0441\u0436\u0438\u043C\u0430\u0439 \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u043D\u0430\u0432\u0435\u0440\u0445\u0443 1 \u0441\u0435\u043A", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438, \u043D\u0435 \u043A\u0430\u0441\u0430\u044F\u0441\u044C \u043F\u043E\u043B\u0430", "\u0427\u0443\u0432\u0441\u0442\u0432\u0443\u0439: \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u044F\u0433\u043E\u0434\u0438\u0446\u0430\u0445, \u043D\u0435 \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435"]
+        },
+        {
+          name: "\u041F\u043E\u0436\u0430\u0440\u043D\u044B\u0439 \u0433\u0438\u0434\u0440\u0430\u043D\u0442",
+          dur: "2 \xD7 12/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          svgKey: "fire_hydrant",
+          body: ["\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445, \u0437\u0430\u043F\u044F\u0441\u0442\u044C\u044F \u043F\u043E\u0434 \u043F\u043B\u0435\u0447\u0430\u043C\u0438", "\u041F\u043E\u0434\u043D\u0438\u043C\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u0443\u044E \u043D\u043E\u0433\u0443 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u2014 \u0431\u0435\u0434\u0440\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u044C\u043D\u043E \u043F\u043E\u043B\u0443", "\u0422\u0430\u0437 \u041D\u0415 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438 \u2014 \u044D\u0442\u043E \u0442\u043E\u0436\u0435 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430"]
+        }
+      ],
+      exercises: [
+        {
+          id: "a1",
+          name: "\u042F\u0433\u043E\u0434\u0438\u0447\u043D\u044B\u0439 \u043C\u043E\u0441\u0442\u0438\u043A \u0432 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0435 \u0421\u043C\u0438\u0442\u0430",
+          sets: 4,
+          repsT: "12\u201315",
+          rest: 75,
+          wt: "20\u201350 \u043A\u0433",
+          muscle: "\u0411\u043E\u043B\u044C\u0448\u0430\u044F \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u0430\u044F",
+          svgKey: "glute_bridge",
+          scol: "\u2713",
+          scolNote: "\u041F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A \u043D\u0435\u0439\u0442\u0440\u0430\u043B\u0435\u043D \u2014 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0416\u0436\u0435\u043D\u0438\u0435 \u0432 \u044F\u0433\u043E\u0434\u0438\u0446\u0430\u0445 \u043D\u0430\u0432\u0435\u0440\u0445\u0443", bad: "\u0411\u043E\u043B\u044C \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u0421\u043A\u0430\u043C\u044C\u044F \u043F\u043E\u043F\u0435\u0440\u0451\u043A \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0430 \u2014 \u043B\u043E\u043F\u0430\u0442\u043A\u0438 (\u043D\u0435 \u0448\u0435\u044F!) \u043D\u0430 \u043A\u0440\u0430\u044E", "\u0421\u0442\u043E\u043F\u044B \u0447\u0443\u0442\u044C \u0448\u0438\u0440\u0435 \u0431\u0451\u0434\u0435\u0440, \u043D\u043E\u0441\u043A\u0438 \u0441\u043B\u0435\u0433\u043A\u0430 \u043D\u0430\u0440\u0443\u0436\u0443", "\u0428\u0442\u0430\u043D\u0433\u0430 \u043D\u0430 \u0431\u0451\u0434\u0440\u0430\u0445 \u2014 \u043F\u043E\u0434\u043B\u043E\u0436\u0438 \u043F\u043E\u043B\u043E\u0442\u0435\u043D\u0446\u0435 \u0438\u043B\u0438 \u043C\u044F\u0433\u043A\u0438\u0439 \u0432\u0430\u043B\u0438\u043A", "\u041E\u043F\u0443\u0441\u0442\u0438 \u0442\u0430\u0437 \u0432\u043D\u0438\u0437 \u2014 \u044D\u0442\u043E \u0441\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u043F\u043E\u0437\u0438\u0446\u0438\u044F", "\u041C\u043E\u0449\u043D\u043E \u0442\u043E\u043B\u043A\u043D\u0438 \u0442\u0430\u0437 \u0432\u0432\u0435\u0440\u0445: \u043F\u0440\u044F\u043C\u0430\u044F \u043B\u0438\u043D\u0438\u044F \u043F\u043B\u0435\u0447\u043E\u2013\u0431\u0435\u0434\u0440\u043E\u2013\u043A\u043E\u043B\u0435\u043D\u043E", "\u0421\u043E\u0436\u043C\u0438 \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u043D\u0430\u0432\u0435\u0440\u0445\u0443 2 \u0441\u0435\u043A\u0443\u043D\u0434\u044B", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438 \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B"],
+          err: ["\u041F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u0432\u044B\u0433\u0438\u0431\u0430\u0435\u0442\u0441\u044F \u043D\u0430\u0432\u0435\u0440\u0445\u0443 \u2192 \u0443\u043C\u0435\u043D\u044C\u0448\u0438 \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u0443", "\u041A\u043E\u043B\u0435\u043D\u0438 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u0432\u043D\u0443\u0442\u0440\u044C \u2192 \u0441\u043B\u0435\u0434\u0438 \u0437\u0430 \u043D\u043E\u0441\u043A\u0430\u043C\u0438"],
+          prog: "20\u043A\u0433\u219230\u043A\u0433\u219240\u043A\u0433\u219250\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438 \u043D\u0430 \u043A\u0430\u0436\u0434\u044B\u0439 \u0432\u0435\u0441)"
+        },
+        {
+          id: "a2",
+          name: "\u041E\u0442\u0432\u0435\u0434\u0435\u043D\u0438\u0435 \u043D\u043E\u0433 \u0432 \u043A\u0440\u043E\u0441\u0441\u043E\u0432\u0435\u0440\u0435",
+          sets: 3,
+          repsT: "15/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          rest: 60,
+          wt: "5\u201320 \u043A\u0433",
+          muscle: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u0430\u044F",
+          svgKey: "generic",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0416\u0436\u0435\u043D\u0438\u0435 \u0441\u0431\u043E\u043A\u0443 \u044F\u0433\u043E\u0434\u0438\u0446\u044B", bad: "\u041D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u041C\u0430\u043D\u0436\u0435\u0442\u0430 \u043D\u0430 \u043B\u043E\u0434\u044B\u0436\u043A\u0435, \u043D\u0438\u0436\u043D\u0438\u0439 \u0431\u043B\u043E\u043A \u043A\u0440\u043E\u0441\u0441\u043E\u0432\u0435\u0440\u0430", "\u0412\u0441\u0442\u0430\u043D\u044C \u0431\u043E\u043A\u043E\u043C \u043A \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0443, \u0432\u043E\u0437\u044C\u043C\u0438\u0441\u044C \u0437\u0430 \u0441\u0442\u043E\u0439\u043A\u0443", "\u041B\u0451\u0433\u043A\u0438\u0439 \u043D\u0430\u043A\u043B\u043E\u043D \u0432\u043F\u0435\u0440\u0451\u0434 10\u201315\xB0", "\u041E\u0442\u0432\u0435\u0434\u0438 \u043D\u043E\u0433\u0443 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u0438 \u043D\u0435\u043C\u043D\u043E\u0433\u043E \u043D\u0430\u0437\u0430\u0434 \u2014 \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u0430 30\u201345\xB0", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0432\u0435\u0440\u043D\u0438\u0441\u044C, \u043A\u043E\u043D\u0442\u0440\u043E\u043B\u0438\u0440\u0443\u044F \u0441\u043E\u043F\u0440\u043E\u0442\u0438\u0432\u043B\u0435\u043D\u0438\u0435"],
+          err: ["\u041A\u043E\u0440\u043F\u0443\u0441 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u2192 \u043A\u0440\u0435\u043F\u0447\u0435 \u0434\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u0441\u0442\u043E\u0439\u043A\u0443", "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u0430\u044F \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u0430 \u2192 \u0432\u043A\u043B\u044E\u0447\u0430\u0435\u0442\u0441\u044F \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430"],
+          prog: "5\u043A\u0433\u21928\u043A\u0433\u219212\u043A\u0433\u219215\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "a3",
+          name: "\u0416\u0438\u043C \u043D\u043E\u0433\u0430\u043C\u0438 (\u0432\u044B\u0441\u043E\u043A\u0430\u044F \u043F\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430)",
+          sets: 4,
+          repsT: "12",
+          rest: 90,
+          wt: "30\u201370 \u043A\u0433",
+          muscle: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B + \u0417\u0430\u0434\u043D\u044F\u044F \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u044C \u0431\u0435\u0434\u0440\u0430",
+          svgKey: "leg_press",
+          scol: "\u2713",
+          scolNote: "\u0421\u043F\u0438\u043D\u0430 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0430\u043D\u0430 \u2014 \u043E\u0447\u0435\u043D\u044C \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0420\u0430\u0431\u043E\u0442\u0430 \u044F\u0433\u043E\u0434\u0438\u0446 \u0438 \u0437\u0430\u0434\u043D\u0435\u0439 \u0447\u0430\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430", bad: "\u0411\u043E\u043B\u044C \u0432 \u043A\u043E\u043B\u0435\u043D\u044F\u0445 \u0438\u043B\u0438 \u043E\u0442\u0440\u044B\u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u044B" },
+          steps: ["\u041D\u043E\u0433\u0438 \u0432\u044B\u0441\u043E\u043A\u043E \u0438 \u0448\u0438\u0440\u043E\u043A\u043E \u043D\u0430 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u0435, \u043D\u043E\u0441\u043A\u0438 30\u201345\xB0", "\u041F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043F\u0440\u0438\u0436\u0430\u0442\u0430 \u043A \u0441\u043F\u0438\u043D\u043A\u0435 \u2014 \u043D\u0435 \u043E\u0442\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F!", "\u041E\u043F\u0443\u0441\u043A\u0430\u0439 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u0443 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u0434\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u0438 \u0431\u0451\u0434\u0435\u0440", "\u0412\u044B\u0436\u0438\u043C\u0430\u0439 \u0447\u0435\u0440\u0435\u0437 \u043F\u044F\u0442\u043A\u0438 \u2014 \u043D\u0435 \u0447\u0435\u0440\u0435\u0437 \u043D\u043E\u0441\u043A\u0438", "\u041A\u043E\u043B\u0435\u043D\u0438 \u0432 \u043E\u0434\u043D\u043E\u0439 \u043F\u043B\u043E\u0441\u043A\u043E\u0441\u0442\u0438 \u0441 \u043D\u043E\u0441\u043A\u0430\u043C\u0438 \u043D\u0430 \u0432\u0441\u0451\u043C \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0438"],
+          err: ["\u041F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043E\u0442\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u2192 \u0443\u043C\u0435\u043D\u044C\u0448\u0438 \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u0443", "\u041A\u043E\u043B\u0435\u043D\u0438 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u0432\u043D\u0443\u0442\u0440\u044C \u2192 \u043A\u0440\u0438\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u043E\u043F\u0430\u0441\u043D\u043E!"],
+          prog: "30\u043A\u0433\u219240\u043A\u0433\u219255\u043A\u0433\u219270\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "a4",
+          name: "\u0420\u0430\u0437\u0433\u0438\u0431\u0430\u043D\u0438\u0435 \u0431\u0435\u0434\u0440\u0430 \u0432 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0435",
+          sets: 3,
+          repsT: "15/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          rest: 60,
+          wt: "15\u201330 \u043A\u0433",
+          muscle: "\u0411\u043E\u043B\u044C\u0448\u0430\u044F \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u0430\u044F (\u043D\u0438\u0436\u043D\u044F\u044F \u0447\u0430\u0441\u0442\u044C)",
+          svgKey: "generic",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0416\u0436\u0435\u043D\u0438\u0435 \u0443 \u043E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u044F \u044F\u0433\u043E\u0434\u0438\u0446\u044B", bad: "\u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u041C\u0430\u043D\u0436\u0435\u0442\u0430 \u043D\u0430 \u043B\u043E\u0434\u044B\u0436\u043A\u0435, \u0432\u0441\u0442\u0430\u043D\u044C \u0432 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440", "\u041A\u043E\u0440\u043F\u0443\u0441 \u0441\u043B\u0435\u0433\u043A\u0430 \u043D\u0430\u043A\u043B\u043E\u043D\u0438 \u0432\u043F\u0435\u0440\u0451\u0434, \u0434\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u0440\u0443\u0447\u043A\u0438", "\u041D\u043E\u0433\u0430 \u0443\u0445\u043E\u0434\u0438\u0442 \u043D\u0430\u0437\u0430\u0434 \u0442\u043E\u043B\u044C\u043A\u043E \u0437\u0430 \u0441\u0447\u0451\u0442 \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u2014 20\u201330\xB0", "\u0421\u043E\u0436\u043C\u0438 \u044F\u0433\u043E\u0434\u0438\u0446\u0443 \u043D\u0430\u0432\u0435\u0440\u0445\u0443 1 \u0441\u0435\u043A", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438 \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B"],
+          err: ["\u041D\u043E\u0433\u0430 \u0443\u0445\u043E\u0434\u0438\u0442 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0432\u044B\u0441\u043E\u043A\u043E \u2192 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0438\u0440\u0443\u0435\u0442", "\u041A\u043E\u0440\u043F\u0443\u0441 \u0440\u0430\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F"],
+          prog: "15\u043A\u0433\u219222\u043A\u0433\u219228\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "a5",
+          name: "\u041F\u043B\u0430\u043D\u043A\u0430 \u043D\u0430 \u043F\u0440\u0435\u0434\u043F\u043B\u0435\u0447\u044C\u044F\u0445",
+          sets: 3,
+          repsT: "40 \u0441\u0435\u043A",
+          rest: 60,
+          wt: "\u2014",
+          muscle: "\u041A\u043E\u0440 \u2014 \u043F\u0440\u044F\u043C\u0430\u044F + \u043F\u043E\u043F\u0435\u0440\u0435\u0447\u043D\u0430\u044F \u043C\u044B\u0448\u0446\u0430 \u0436\u0438\u0432\u043E\u0442\u0430",
+          svgKey: "plank",
+          scol: "\u26A0",
+          scolNote: "\u0421\u043B\u0435\u0434\u0438 \u0437\u0430 \u043D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u044B\u043C \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u043E\u043C",
+          feel: { good: "\u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0436\u0438\u0432\u043E\u0442\u0430 \u0438 \u0440\u0443\u043A", bad: "\u0411\u043E\u043B\u044C \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u041B\u043E\u043A\u0442\u0438 \u0441\u0442\u0440\u043E\u0433\u043E \u043F\u043E\u0434 \u043F\u043B\u0435\u0447\u0430\u043C\u0438, \u043F\u0440\u0435\u0434\u043F\u043B\u0435\u0447\u044C\u044F \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u044C\u043D\u044B", "\u0422\u0435\u043B\u043E \u2014 \u043F\u0440\u044F\u043C\u0430\u044F \u043B\u0438\u043D\u0438\u044F \u043E\u0442 \u0433\u043E\u043B\u043E\u0432\u044B \u0434\u043E \u043F\u044F\u0442\u043E\u043A", "\u0416\u0438\u0432\u043E\u0442 \u0432\u0442\u044F\u043D\u0443\u0442, \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u0447\u0443\u0442\u044C \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u044B", "\u0413\u043E\u043B\u043E\u0432\u0430 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0435\u0442 \u043B\u0438\u043D\u0438\u044E \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430", "\u0414\u044B\u0448\u0438 \u0440\u0430\u0432\u043D\u043E\u043C\u0435\u0440\u043D\u043E \u2014 \u043D\u0435 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0439 \u0434\u044B\u0445\u0430\u043D\u0438\u0435"],
+          err: ["\u0422\u0430\u0437 \u0432\u044B\u043F\u0438\u0440\u0430\u0435\u0442 \u0432\u0432\u0435\u0440\u0445 \u2192 \u043D\u0435 \u0443\u043F\u0440\u043E\u0449\u0430\u0439 \u0442\u0430\u043A", "\u0422\u0430\u0437 \u043F\u0440\u043E\u0432\u0438\u0441\u0430\u0435\u0442 \u0432\u043D\u0438\u0437 \u2192 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u0441\u0442\u0440\u0430\u0434\u0430\u0435\u0442"],
+          prog: "30\u0441\u0435\u043A\u219240\u0441\u0435\u043A\u219250\u0441\u0435\u043A\u219260\u0441\u0435\u043A (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "a6",
+          name: "Dead Bug",
+          sets: 3,
+          repsT: "8/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          rest: 60,
+          wt: "\u2014",
+          muscle: "\u0413\u043B\u0443\u0431\u043E\u043A\u0438\u0439 \u043A\u043E\u0440 \xB7 \u041F\u043E\u043F\u0435\u0440\u0435\u0447\u043D\u0430\u044F \u043C\u044B\u0448\u0446\u0430",
+          svgKey: "dead_bug",
+          scol: "\u2713",
+          scolNote: "\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u043E\u0432\u0430\u043D\u043E \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435",
+          feel: { good: "\u041B\u0451\u0433\u043A\u043E\u0435 \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0436\u0438\u0432\u043E\u0442\u0430", bad: "\u041E\u0442\u0440\u044B\u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u044B \u043E\u0442 \u043F\u043E\u043B\u0430" },
+          steps: ["\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u0420\u0443\u043A\u0438 \u0432\u0435\u0440\u0442\u0438\u043A\u0430\u043B\u044C\u043D\u043E \u043D\u0430\u0434 \u043F\u043B\u0435\u0447\u0430\u043C\u0438. \u041D\u043E\u0433\u0438 \u043F\u043E\u0434 90\xB0", "\u0413\u041B\u0410\u0412\u041D\u041E\u0415: \u043F\u0440\u0438\u0436\u043C\u0438 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0443 \u043A \u043F\u043E\u043B\u0443 \u0438 \u043D\u0435 \u043E\u0442\u0440\u044B\u0432\u0430\u0439", "\u041E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u043A\u0430\u0439 \u043F\u0440\u0430\u0432\u0443\u044E \u0440\u0443\u043A\u0443 \u043D\u0430\u0434 \u0433\u043E\u043B\u043E\u0432\u043E\u0439 \u0438 \u043B\u0435\u0432\u0443\u044E \u043D\u043E\u0433\u0443 \u0432\u043D\u0438\u0437", "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438 \u043D\u043E\u0433\u0443 \u0432 5\u201310 \u0441\u043C \u043E\u0442 \u043F\u043E\u043B\u0430 \u2014 \u043D\u0435 \u043A\u0430\u0441\u0430\u0439\u0441\u044F", "\u0412\u0435\u0440\u043D\u0438\u0441\u044C. \u041F\u043E\u0432\u0442\u043E\u0440\u0438 \u0434\u0440\u0443\u0433\u043E\u0439 \u0441\u0442\u043E\u0440\u043E\u043D\u043E\u0439. \u0422\u043E\u043B\u044C\u043A\u043E \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E"],
+          err: ["\u041F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043E\u0442\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u2192 \u0443\u043C\u0435\u043D\u044C\u0448\u0438 \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u0443 \u043D\u043E\u0433\u0438", "\u0422\u043E\u0440\u043E\u043F\u0438\u0448\u044C\u0441\u044F \u2192 \u044D\u0442\u043E \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E"],
+          prog: "8\u043F\u043E\u0432\u0442\u219210\u043F\u043E\u0432\u0442\u219212\u043F\u043E\u0432\u0442\u2192+1\u043A\u0433 \u0433\u0430\u043D\u0442\u0435\u043B\u044C (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)",
+          beginner: "\u0415\u0441\u043B\u0438 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043E\u0442\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u2014 \u043F\u0440\u043E\u0441\u0442\u043E \u043F\u043E\u0434\u043D\u0438\u043C\u0430\u0439 \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0443\u043A\u0443, \u043D\u043E\u0433\u0438 \u0434\u0435\u0440\u0436\u0438 \u0441\u0442\u0430\u0442\u0438\u0447\u043D\u043E. \u042D\u0442\u043E \u043F\u043E\u043B\u043D\u043E\u0446\u0435\u043D\u043D\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u0434\u043B\u044F \u0441\u0442\u0430\u0440\u0442\u0430."
+        }
+      ],
+      cooldown: [
+        {
+          name: "\u041F\u043E\u0437\u0430 \u0433\u043E\u043B\u0443\u0431\u044F \u2014 \u0440\u0430\u0441\u0442\u044F\u0436\u043A\u0430 \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u043E\u0439",
+          dur: "60 \u0441\u0435\u043A/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          svgKey: "generic",
+          body: ["\u041E\u0434\u043D\u0430 \u043D\u043E\u0433\u0430 \u0441\u043E\u0433\u043D\u0443\u0442\u0430 \u043F\u0435\u0440\u0435\u0434 \u0441\u043E\u0431\u043E\u0439, \u0434\u0440\u0443\u0433\u0430\u044F \u0432\u044B\u0442\u044F\u043D\u0443\u0442\u0430 \u043D\u0430\u0437\u0430\u0434", "\u041E\u043F\u0443\u0441\u0442\u0438\u0441\u044C \u043D\u0430 \u043F\u0440\u0435\u0434\u043F\u043B\u0435\u0447\u044C\u044F \u2014 \u043D\u0435 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u0439 \u043A\u043E\u0440\u043F\u0443\u0441 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443", "\u0414\u044B\u0448\u0438 \u0433\u043B\u0443\u0431\u043E\u043A\u043E \u2014 \u043D\u0430 \u0432\u044B\u0434\u043E\u0445\u0435 \u043F\u043E\u0437\u0432\u043E\u043B\u044F\u0439 \u043C\u044B\u0448\u0446\u0430\u043C \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u0438\u0442\u044C\u0441\u044F", "\u0414\u043E\u043B\u0436\u043D\u043E \u0447\u0443\u0432\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C\u0441\u044F \u0433\u043B\u0443\u0431\u043E\u043A\u043E\u0435 \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u044F\u0433\u043E\u0434\u0438\u0446\u0435"]
+        },
+        {
+          name: "\u0420\u0430\u0441\u0442\u044F\u0436\u043A\u0430 \u0441\u0433\u0438\u0431\u0430\u0442\u0435\u043B\u0435\u0439 \u0431\u0435\u0434\u0440\u0430",
+          dur: "45 \u0441\u0435\u043A/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          svgKey: "generic",
+          body: ["\u041E\u0434\u043D\u043E \u043A\u043E\u043B\u0435\u043D\u043E \u043D\u0430 \u043F\u043E\u043B\u0443, \u0434\u0440\u0443\u0433\u0430\u044F \u043D\u043E\u0433\u0430 \u0432\u043F\u0435\u0440\u0435\u0434\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u0430", "\u0422\u0430\u0437 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F \u0432\u043D\u0438\u0437 \u2014 \u043D\u0435 \u043D\u0430\u043A\u043B\u043E\u043D\u044F\u0439 \u043A\u043E\u0440\u043F\u0443\u0441 \u0432\u043F\u0435\u0440\u0451\u0434", "\u041F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0439 \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0441\u043F\u0435\u0440\u0435\u0434\u0438 \u0431\u0435\u0434\u0440\u0430 \u043E\u043F\u043E\u0440\u043D\u043E\u0439 \u043D\u043E\u0433\u0438", "\u041C\u043E\u0436\u043D\u043E \u043F\u043E\u0434\u043D\u044F\u0442\u044C \u0440\u0443\u043A\u0438 \u0432\u0432\u0435\u0440\u0445 \u0434\u043B\u044F \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u044F"]
+        },
+        {
+          name: "\u0414\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u044B\u0445\u0430\u043D\u0438\u0435 \u2014 \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430",
+          dur: "3 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435, \u043D\u043E\u0433\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u044B", "\u041E\u0434\u043D\u0430 \u0440\u0443\u043A\u0430 \u043D\u0430 \u0436\u0438\u0432\u043E\u0442\u0435 \u2014 \u043A\u043E\u043D\u0442\u0440\u043E\u043B\u0438\u0440\u0443\u0435\u0442 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435", "\u0412\u0434\u043E\u0445 \u043D\u043E\u0441\u043E\u043C: \u0436\u0438\u0432\u043E\u0442 \u043F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0442\u0441\u044F, \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u044F\u0435\u0442\u0441\u044F \u0438 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F", "\u0412\u044B\u0434\u043E\u0445 \u0440\u0442\u043E\u043C: \u0436\u0438\u0432\u043E\u0442 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F. \u0411\u0435\u0437 \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u044F \u0432\u043D\u0438\u0437\u0443"]
+        }
+      ]
+    },
+    {
+      id: "B",
+      name: "\u0421\u043F\u0438\u043D\u0430 + \u041A\u043E\u0440",
+      emoji: "🦅",
+      clr: C.bark,
+      clrS: C.barkSoft,
+      clrD: "#5A4A32",
+      totalMin: 77,
+      intensity: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F",
+      warmup: [
+        {
+          name: "\u042D\u043B\u043B\u0438\u043F\u0441\u043E\u0438\u0434",
+          dur: "5 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041B\u0451\u0433\u043A\u0438\u0439 \u0442\u0435\u043C\u043F \u0431\u0435\u0437 \u043D\u0430\u043A\u043B\u043E\u043D\u0430 \u0432\u043F\u0435\u0440\u0451\u0434", "\u0421\u043F\u0438\u043D\u0430 \u043F\u0440\u044F\u043C\u0430\u044F, \u0434\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u0440\u0443\u0447\u043A\u0438", "\u042D\u043B\u043B\u0438\u043F\u0441 \u043B\u0443\u0447\u0448\u0435 \u0431\u0435\u0433\u043E\u0432\u043E\u0439 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u2014 \u043D\u0435\u0442 \u0443\u0434\u0430\u0440\u043D\u043E\u0439 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438", "\u0426\u0435\u043B\u044C: \u0440\u0430\u0437\u043E\u0433\u0440\u0435\u0442\u044C \u0441\u043F\u0438\u043D\u0443 \u0438 \u043F\u043B\u0435\u0447\u0438"]
+        },
+        {
+          name: "\u041A\u043E\u0448\u043A\u0430-\u043A\u043E\u0440\u043E\u0432\u0430",
+          dur: "2 \xD7 10 \u043F\u043E\u0432\u0442.",
+          svgKey: "cat_cow",
+          body: ["\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445, \u0437\u0430\u043F\u044F\u0441\u0442\u044C\u044F \u043F\u043E\u0434 \u043F\u043B\u0435\u0447\u0430\u043C\u0438", "\u0412\u0434\u043E\u0445: \u0436\u0438\u0432\u043E\u0442 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F, \u0441\u043F\u0438\u043D\u0430 \u043F\u0440\u043E\u0433\u0438\u0431\u0430\u0435\u0442\u0441\u044F \u0432\u043D\u0438\u0437 (\u043A\u043E\u0440\u043E\u0432\u0430)", "\u0412\u044B\u0434\u043E\u0445: \u0441\u043F\u0438\u043D\u0430 \u0432\u044B\u0433\u0438\u0431\u0430\u0435\u0442\u0441\u044F \u0434\u0443\u0433\u043E\u0439 \u0432\u0432\u0435\u0440\u0445, \u043F\u043E\u0434\u0431\u043E\u0440\u043E\u0434\u043E\u043A \u043A \u0433\u0440\u0443\u0434\u0438 (\u043A\u043E\u0448\u043A\u0430)", "\u0421\u043B\u0435\u0434\u0443\u0439 \u0437\u0430 \u0434\u044B\u0445\u0430\u043D\u0438\u0435\u043C \u2014 \u043D\u0435 \u0442\u043E\u0440\u043E\u043F\u0438\u0441\u044C"]
+        },
+        {
+          name: "\u0420\u0430\u0437\u0432\u0435\u0434\u0435\u043D\u0438\u0435 \u0440\u0443\u043A \u0441 \u043B\u0435\u043D\u0442\u043E\u0439",
+          dur: "2 \xD7 12",
+          svgKey: "reverse_fly",
+          body: ["\u0421\u0442\u043E\u0438\u0448\u044C, \u043B\u0435\u043D\u0442\u0430 \u0432 \u043E\u0431\u0435\u0438\u0445 \u0440\u0443\u043A\u0430\u0445 \u043F\u0435\u0440\u0435\u0434 \u0441\u043E\u0431\u043E\u0439", "\u0420\u0430\u0437\u0432\u043E\u0434\u0438 \u043F\u0440\u044F\u043C\u044B\u0435 \u0440\u0443\u043A\u0438 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u044B \u0434\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u0438 \u0441 \u043F\u043E\u043B\u043E\u043C", "\u0421\u0432\u043E\u0434\u0438\u0448\u044C \u043B\u043E\u043F\u0430\u0442\u043A\u0438 \u2014 \u044D\u0442\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0448\u044C"]
+        }
+      ],
+      exercises: [
+        {
+          id: "b1",
+          name: "\u0422\u044F\u0433\u0430 \u0433\u043E\u0440\u0438\u0437\u043E\u043D\u0442\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u0431\u043B\u043E\u043A\u0430 \u0441\u0438\u0434\u044F",
+          sets: 4,
+          repsT: "12",
+          rest: 75,
+          wt: "20\u201350 \u043A\u0433",
+          muscle: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0441\u043F\u0438\u043D\u0430 \xB7 \u0420\u043E\u043C\u0431\u043E\u0432\u0438\u0434\u043D\u044B\u0435",
+          svgKey: "seated_row",
+          scol: "\u2713",
+          scolNote: "\u041B\u0443\u0447\u0448\u0435\u0435 \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u0435 \u0434\u043B\u044F \u043E\u0441\u0430\u043D\u043A\u0438 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435",
+          feel: { good: "\u0421\u0436\u0430\u0442\u0438\u0435 \u0432 \u0441\u0435\u0440\u0435\u0434\u0438\u043D\u0435 \u0441\u043F\u0438\u043D\u044B \u043C\u0435\u0436\u0434\u0443 \u043B\u043E\u043F\u0430\u0442\u043A\u0430\u043C\u0438", bad: "\u0422\u044F\u0433\u0430 \u0437\u0430 \u0441\u0447\u0451\u0442 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u044B \u0438\u043B\u0438 \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0443\u043A\u0430\u043C\u0438" },
+          steps: ["\u0421\u044F\u0434\u044C, \u0441\u0442\u043E\u043F\u044B \u0432 \u0443\u043F\u043E\u0440\u044B, \u043A\u043E\u043B\u0435\u043D\u0438 \u0441\u043B\u0435\u0433\u043A\u0430 \u0441\u043E\u0433\u043D\u0443\u0442\u044B", "\u041D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u044B\u0439 \u0445\u0432\u0430\u0442 \u2014 \u043B\u0430\u0434\u043E\u043D\u0438 \u0441\u043C\u043E\u0442\u0440\u044F\u0442 \u0434\u0440\u0443\u0433 \u043A \u0434\u0440\u0443\u0433\u0443", "\u0428\u0410\u0413 1: \u043F\u043E\u0442\u044F\u043D\u0438 \u043B\u043E\u043F\u0430\u0442\u043A\u0438 \u043D\u0430\u0437\u0430\u0434 \u0438 \u0432\u043D\u0438\u0437 (\u043A\u0430\u043A \u0431\u0443\u0434\u0442\u043E \u043F\u0440\u044F\u0447\u0435\u0448\u044C \u0438\u0445 \u0432 \u0437\u0430\u0434\u043D\u0438\u0439 \u043A\u0430\u0440\u043C\u0430\u043D)", "\u0428\u0410\u0413 2: \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0442\u043E\u043C \u0442\u044F\u043D\u0438 \u0440\u0443\u043A\u0430\u043C\u0438 \u2014 \u043B\u043E\u043A\u0442\u0438 \u0438\u0434\u0443\u0442 \u043D\u0430\u0437\u0430\u0434 \u0432\u0434\u043E\u043B\u044C \u0442\u0435\u043B\u0430", "\u0420\u0443\u0447\u043A\u0430 \u043A \u0436\u0438\u0432\u043E\u0442\u0443. \u0421\u043E\u0436\u043C\u0438 \u043B\u043E\u043F\u0430\u0442\u043A\u0438 \u0432 \u043A\u043E\u043D\u0435\u0447\u043D\u043E\u0439 \u0442\u043E\u0447\u043A\u0435 1\u20132 \u0441\u0435\u043A", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0432\u0435\u0440\u043D\u0438 \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u2014 \u043D\u0435 \u0440\u043E\u043D\u044F\u0439 \u0432\u0435\u0441"],
+          err: ["\u041A\u043E\u0440\u043F\u0443\u0441 \u0441\u0438\u043B\u044C\u043D\u043E \u043E\u0442\u043A\u043B\u043E\u043D\u044F\u0435\u0442\u0441\u044F \u043D\u0430\u0437\u0430\u0434 \u2192 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430", "\u0422\u044F\u043D\u0435\u0448\u044C \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0443\u043A\u0430\u043C\u0438, \u043D\u0435 \u0432\u043A\u043B\u044E\u0447\u0430\u044F \u043B\u043E\u043F\u0430\u0442\u043A\u0438"],
+          prog: "20\u043A\u0433\u219230\u043A\u0433\u219240\u043A\u0433\u219250\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "b2",
+          name: "\u0422\u044F\u0433\u0430 \u0432\u0435\u0440\u0445\u043D\u0435\u0433\u043E \u0431\u043B\u043E\u043A\u0430 \u0448\u0438\u0440\u043E\u043A\u0438\u043C \u0445\u0432\u0430\u0442\u043E\u043C",
+          sets: 4,
+          repsT: "12",
+          rest: 75,
+          wt: "25\u201355 \u043A\u0433",
+          muscle: "\u0428\u0438\u0440\u043E\u0447\u0430\u0439\u0448\u0438\u0435 \xB7 \u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0441\u043F\u0438\u043D\u0430",
+          svgKey: "lat_pulldown",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E \u043F\u0440\u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E\u0439 \u0442\u0435\u0445\u043D\u0438\u043A\u0435",
+          feel: { good: "\u0420\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u043F\u043E \u0431\u043E\u043A\u0430\u043C \u0441\u043F\u0438\u043D\u044B (\u043F\u043E\u0434 \u043F\u043E\u0434\u043C\u044B\u0448\u043A\u0430\u043C\u0438)", bad: "\u0411\u043E\u043B\u044C \u0432 \u0448\u0435\u0435 \u0438\u043B\u0438 \u043F\u043B\u0435\u0447\u0430\u0445" },
+          steps: ["\u0425\u0432\u0430\u0442 \u0447\u0443\u0442\u044C \u0448\u0438\u0440\u0435 \u043F\u043B\u0435\u0447, \u043B\u0430\u0434\u043E\u043D\u0438 \u043E\u0442 \u0441\u0435\u0431\u044F", "\u041D\u0430\u043A\u043B\u043E\u043D\u0438\u0441\u044C \u043D\u0430\u0437\u0430\u0434 70\u201380\xB0 \u2014 \u043D\u0435 \u043B\u0435\u0436\u0438!", "\u0422\u044F\u043D\u0438 \u0433\u0440\u0438\u0444 \u043A \u0432\u0435\u0440\u0445\u043D\u0435\u0439 \u0447\u0430\u0441\u0442\u0438 \u0433\u0440\u0443\u0434\u0438 \u2014 \u041D\u0415 \u0437\u0430 \u0448\u0435\u044E!", "\u0428\u0410\u0413 1: \u043E\u043F\u0443\u0441\u0442\u0438 \u043B\u043E\u043F\u0430\u0442\u043A\u0438 \u0432\u043D\u0438\u0437", "\u0428\u0410\u0413 2: \u0442\u044F\u043D\u0438 \u043B\u043E\u043A\u0442\u0438 \u0432\u043D\u0438\u0437 \u0438 \u043D\u0435\u043C\u043D\u043E\u0433\u043E \u043D\u0430\u0437\u0430\u0434", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0432\u0435\u0440\u043D\u0438 \u0432\u0432\u0435\u0440\u0445 \u2014 \u043F\u043E\u043B\u043D\u043E\u0435 \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0448\u0438\u0440\u043E\u0447\u0430\u0439\u0448\u0438\u0445"],
+          err: ["\u0422\u044F\u0433\u0430 \u0437\u0430 \u0448\u0435\u044E \u2192 \u043E\u0447\u0435\u043D\u044C \u043E\u043F\u0430\u0441\u043D\u043E \u0434\u043B\u044F \u0448\u0435\u0439\u043D\u043E\u0433\u043E \u043E\u0442\u0434\u0435\u043B\u0430!", "\u0420\u0430\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043A\u043E\u0440\u043F\u0443\u0441\u0430 \u2192 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0443\u0445\u043E\u0434\u0438\u0442 \u0441 \u043C\u044B\u0448\u0446"],
+          prog: "25\u043A\u0433\u219235\u043A\u0433\u219245\u043A\u0433\u219255\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "b3",
+          name: "\u0413\u0438\u043F\u0435\u0440\u044D\u043A\u0441\u0442\u0435\u043D\u0437\u0438\u044F \u0431\u0435\u0437 \u0432\u0435\u0441\u0430",
+          sets: 3,
+          repsT: "15",
+          rest: 60,
+          wt: "\u0431\u0435\u0437 \u0432\u0435\u0441\u0430",
+          muscle: "\u0420\u0430\u0437\u0433\u0438\u0431\u0430\u0442\u0435\u043B\u0438 \u0441\u043F\u0438\u043D\u044B \xB7 \u042F\u0433\u043E\u0434\u0438\u0446\u044B",
+          svgKey: "hyperext",
+          scol: "\u26A0",
+          scolNote: "\u0422\u043E\u043B\u044C\u043A\u043E \u0434\u043E \u043D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u043E\u0439 \u043B\u0438\u043D\u0438\u0438 \u2014 \u0431\u0435\u0437 \u043F\u0435\u0440\u0435\u0440\u0430\u0437\u0433\u0438\u0431\u0430\u043D\u0438\u044F!",
+          feel: { good: "\u0420\u0430\u0431\u043E\u0442\u0430 \u044F\u0433\u043E\u0434\u0438\u0446 \u0438 \u043C\u044F\u0433\u043A\u043E\u0435 \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0441\u043F\u0438\u043D\u044B", bad: "\u0411\u043E\u043B\u044C \u0438\u043B\u0438 \u0434\u0438\u0441\u043A\u043E\u043C\u0444\u043E\u0440\u0442 \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u0411\u0451\u0434\u0440\u0430 \u043D\u0430 \u043F\u043E\u0434\u0443\u0448\u043A\u0435 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0430, \u043D\u043E\u0441\u043A\u0438 \u0432 \u0443\u043F\u043E\u0440\u0430\u0445", "\u0420\u0443\u043A\u0438 \u0441\u043A\u0440\u0435\u0449\u0435\u043D\u044B \u043D\u0430 \u0433\u0440\u0443\u0434\u0438 \u2014 \u043D\u0435 \u0437\u0430 \u0433\u043E\u043B\u043E\u0432\u0443!", "\u041D\u0430\u0447\u043D\u0438 \u0441 \u043E\u043F\u0443\u0449\u0435\u043D\u043D\u043E\u0433\u043E \u043A\u043E\u0440\u043F\u0443\u0441\u0430 \u2014 \u0441\u043F\u0438\u043D\u0430 \u043D\u0435\u043C\u043D\u043E\u0433\u043E \u043E\u043A\u0440\u0443\u0433\u043B\u0435\u043D\u0430", "\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0439, \u0440\u0430\u0437\u0432\u043E\u0440\u0430\u0447\u0438\u0432\u0430\u044F \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A \u0441\u043D\u0438\u0437\u0443 \u0432\u0432\u0435\u0440\u0445, \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u043A \u0437\u0430 \u043F\u043E\u0437\u0432\u043E\u043D\u043A\u043E\u043C", "\u2B50 \u0421\u0422\u041E\u041F \u043A\u043E\u0433\u0434\u0430 \u0442\u0435\u043B\u043E \u2014 \u043F\u0440\u044F\u043C\u0430\u044F \u043B\u0438\u043D\u0438\u044F. \u042D\u0442\u043E \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435!", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438 \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B"],
+          err: ["\u0417\u0430\u043F\u0440\u043E\u043A\u0438\u0434\u044B\u0432\u0430\u043D\u0438\u0435 \u0432\u044B\u0448\u0435 \u043F\u0440\u044F\u043C\u043E\u0439 \u043B\u0438\u043D\u0438\u0438 \u2192 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u043E", "\u0420\u044B\u0432\u043A\u043E\u0432\u043E\u0435 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435 \u2192 \u043D\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442 \u0434\u0438\u0441\u043A\u0438"],
+          prog: "\u0431\u0435\u0437 \u0432\u0435\u0441\u0430\u2192\u0431\u0435\u0437 \u0432\u0435\u0441\u0430\u2192+2.5\u043A\u0433\u2192+5\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "b4",
+          name: "\u041E\u0431\u0440\u0430\u0442\u043D\u043E\u0435 \u0440\u0430\u0437\u0432\u0435\u0434\u0435\u043D\u0438\u0435 \u0433\u0430\u043D\u0442\u0435\u043B\u0435\u0439 \u043B\u0451\u0436\u0430",
+          sets: 3,
+          repsT: "15",
+          rest: 60,
+          wt: "4\u201310 \u043A\u0433",
+          muscle: "\u0417\u0430\u0434\u043D\u0438\u0435 \u0434\u0435\u043B\u044C\u0442\u044B \xB7 \u0420\u043E\u043C\u0431\u043E\u0432\u0438\u0434\u043D\u044B\u0435",
+          svgKey: "reverse_fly",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E, \u043E\u0447\u0435\u043D\u044C \u043F\u043E\u043B\u0435\u0437\u043D\u043E \u0434\u043B\u044F \u043E\u0441\u0430\u043D\u043A\u0438",
+          feel: { good: "\u0421\u0436\u0430\u0442\u0438\u0435 \u043C\u0435\u0436\u0434\u0443 \u043B\u043E\u043F\u0430\u0442\u043A\u0430\u043C\u0438", bad: "\u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u0448\u0435\u0435 \u0438\u043B\u0438 \u0442\u0440\u0430\u043F\u0435\u0446\u0438\u0438" },
+          steps: ["\u041B\u044F\u0433\u044C \u0433\u0440\u0443\u0434\u044C\u044E \u043D\u0430 \u043D\u0430\u043A\u043B\u043E\u043D\u043D\u0443\u044E \u0441\u043A\u0430\u043C\u044C\u044E (\u0443\u0433\u043E\u043B 30\xB0), \u043B\u0438\u0446\u043E\u043C \u0432\u043D\u0438\u0437", "\u0413\u0430\u043D\u0442\u0435\u043B\u0438 \u0441\u0432\u0438\u0441\u0430\u044E\u0442 \u0432\u043D\u0438\u0437 \u2014 \u0441\u0442\u0430\u0440\u0442\u043E\u0432\u043E\u0435 \u043F\u043E\u043B\u043E\u0436\u0435\u043D\u0438\u0435", "\u0420\u0430\u0437\u0432\u0435\u0434\u0438 \u0440\u0443\u043A\u0438 \u043A\u0430\u043A \u043A\u0440\u044B\u043B\u044C\u044F \u2014 \u043B\u043E\u043A\u0442\u0438 \u0441\u043B\u0435\u0433\u043A\u0430 \u0441\u043E\u0433\u043D\u0443\u0442\u044B", "\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0439 \u0434\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u0438 \u0441 \u043F\u043E\u043B\u043E\u043C \u2014 \u043D\u0435 \u0432\u044B\u0448\u0435", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438 \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B"],
+          err: ["\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0448\u044C \u0432\u044B\u0448\u0435 \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u0438 \u2192 \u043B\u0438\u0448\u043D\u044F\u044F \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043D\u0430 \u043F\u043B\u0435\u0447\u0438", "\u0428\u0435\u044F \u043D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0430 \u2192 \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u044C, \u0432\u0437\u0433\u043B\u044F\u0434 \u0432\u043D\u0438\u0437"],
+          prog: "4\u043A\u0433\u21926\u043A\u0433\u21928\u043A\u0433\u219210\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "b5",
+          name: "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043F\u043B\u0430\u043D\u043A\u0430 \u0441 \u043A\u043E\u043B\u0435\u043D\u0430",
+          sets: 3,
+          repsT: "25 \u0441\u0435\u043A/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          rest: 60,
+          wt: "\u2014",
+          muscle: "\u0411\u043E\u043A\u043E\u0432\u043E\u0439 \u043A\u043E\u0440 \xB7 \u041A\u0432\u0430\u0434\u0440\u0430\u0442\u043D\u0430\u044F \u043F\u043E\u044F\u0441\u043D\u0438\u0447\u043D\u0430\u044F",
+          svgKey: "side_plank",
+          scol: "\u2713",
+          scolNote: "\u041E\u0441\u043E\u0431\u0435\u043D\u043D\u043E \u0432\u0430\u0436\u043D\u043E \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u2014 \u0432\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0435\u0442 \u0434\u0438\u0441\u0431\u0430\u043B\u0430\u043D\u0441",
+          feel: { good: "\u0411\u043E\u043A\u043E\u0432\u044B\u0435 \u043C\u044B\u0448\u0446\u044B \u0436\u0438\u0432\u043E\u0442\u0430", bad: "\u0411\u043E\u043B\u044C \u0432 \u043F\u043B\u0435\u0447\u0435 \u043E\u043F\u043E\u0440\u044B" },
+          steps: ["\u041B\u0435\u0447\u044C \u043D\u0430 \u0431\u043E\u043A, \u0443\u043F\u043E\u0440 \u043D\u0430 \u043D\u0438\u0436\u043D\u0435\u0435 \u043F\u0440\u0435\u0434\u043F\u043B\u0435\u0447\u044C\u0435 \u0438 \u043A\u043E\u043B\u0435\u043D\u043E", "\u041F\u043E\u0434\u043D\u0438\u043C\u0438 \u0442\u0430\u0437 \u2014 \u0442\u0435\u043B\u043E \u043F\u0440\u044F\u043C\u0430\u044F \u043B\u0438\u043D\u0438\u044F \u043E\u0442 \u043A\u043E\u043B\u0435\u043D\u0430 \u0434\u043E \u043F\u043B\u0435\u0447\u0430", "\u041D\u0435 \u043F\u043E\u0437\u0432\u043E\u043B\u044F\u0439 \u0442\u0430\u0437\u0443 \u043F\u0440\u043E\u0432\u0430\u043B\u0438\u0432\u0430\u0442\u044C\u0441\u044F \u0432\u043D\u0438\u0437", "\u041F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435: \u0434\u0435\u0440\u0436\u0438 \u0441\u043B\u0430\u0431\u0443\u044E \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u043D\u0430 5\u201310 \u0441\u0435\u043A \u0434\u043E\u043B\u044C\u0448\u0435"],
+          err: ["\u0422\u0430\u0437 \u043F\u0440\u043E\u0432\u0438\u0441\u0430\u0435\u0442 \u0432\u043D\u0438\u0437", "\u041F\u043B\u0435\u0447\u043E \u043E\u043F\u043E\u0440\u044B \u043F\u0440\u043E\u0432\u0430\u043B\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0432 \u0443\u0445\u043E \u2014 \u0434\u0435\u0440\u0436\u0438 \u043F\u043B\u0435\u0447\u043E \u0441\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u044B\u043C"],
+          prog: "20\u0441\u0435\u043A\u219225\u0441\u0435\u043A\u219230\u0441\u0435\u043A\u2192\u043F\u043E\u043B\u043D\u0430\u044F \u043F\u043B\u0430\u043D\u043A\u0430 \u0431\u0435\u0437 \u043A\u043E\u043B\u0435\u043D\u0430",
+          beginner: "\u041D\u0430\u0447\u0438\u043D\u0430\u0439 \u0441 \u0432\u0430\u0440\u0438\u0430\u043D\u0442\u0430 \u0441 \u043A\u043E\u043B\u0435\u043D\u0430 \u2014 \u044D\u0442\u043E \u0438 \u0435\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E\u0435 \u043D\u0430\u0447\u0430\u043B\u043E \u0434\u043B\u044F \u043D\u043E\u0432\u0438\u0447\u043A\u0430. \u041F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u043F\u043E\u043B\u043D\u043E\u0439 \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 30 \u0441\u0435\u043A \u0441 \u043A\u043E\u043B\u0435\u043D\u0430 \u0434\u0430\u044E\u0442\u0441\u044F \u043B\u0435\u0433\u043A\u043E."
+        },
+        {
+          id: "b6",
+          name: "Bird Dog",
+          sets: 3,
+          repsT: "10/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          rest: 60,
+          wt: "\u2014",
+          muscle: "\u041C\u0443\u043B\u044C\u0442\u0438\u0444\u0438\u0434\u0443\u0441\u044B \xB7 \u0421\u0442\u0430\u0431\u0438\u043B\u0438\u0437\u0430\u0442\u043E\u0440\u044B \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430",
+          svgKey: "bird_dog",
+          scol: "\u2713",
+          scolNote: "\u041B\u0443\u0447\u0448\u0435\u0435 \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435",
+          feel: { good: "\u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u043F\u043E \u0432\u0441\u0435\u043C\u0443 \u043A\u043E\u0440\u043F\u0443\u0441\u0443", bad: "\u0421\u043A\u0440\u0443\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u0438\u043B\u0438 \u043F\u043E\u0434\u044A\u0451\u043C \u0442\u0430\u0437\u0430" },
+          steps: ["\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445. \u0417\u0430\u043F\u044F\u0441\u0442\u044C\u044F \u043F\u043E\u0434 \u043F\u043B\u0435\u0447\u0430\u043C\u0438, \u043A\u043E\u043B\u0435\u043D\u0438 \u043F\u043E\u0434 \u0431\u0451\u0434\u0440\u0430\u043C\u0438", "\u041D\u0430\u043F\u0440\u044F\u0433\u0438 \u0436\u0438\u0432\u043E\u0442 \u2014 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043D\u0435 \u043F\u0440\u043E\u0432\u0438\u0441\u0430\u0435\u0442", "\u041E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u0432\u044B\u0442\u044F\u043D\u0438 \u043F\u0440\u0430\u0432\u0443\u044E \u0440\u0443\u043A\u0443 \u0432\u043F\u0435\u0440\u0451\u0434 \u0438 \u043B\u0435\u0432\u0443\u044E \u043D\u043E\u0433\u0443 \u043D\u0430\u0437\u0430\u0434", "\u0417\u0430\u0434\u0435\u0440\u0436\u0438\u0441\u044C 2\u20133 \u0441\u0435\u043A. \u041D\u043E\u0433\u0430 \u0438 \u0440\u0443\u043A\u0430 \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u044C\u043D\u044B \u043F\u043E\u043B\u0443", "\u0412\u0435\u0440\u043D\u0438\u0441\u044C \u043D\u0435 \u043A\u0430\u0441\u0430\u044F\u0441\u044C \u043F\u043E\u043B\u0430. \u0427\u0435\u0440\u0435\u0434\u0443\u0439 \u0441\u0442\u043E\u0440\u043E\u043D\u044B"],
+          err: ["\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0448\u044C \u043D\u043E\u0433\u0443 \u0432\u044B\u0448\u0435 \u0431\u0451\u0434\u0435\u0440 \u2192 \u0442\u0430\u0437 \u0441\u043A\u0440\u0443\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F", "\u041F\u0440\u043E\u0432\u0430\u043B\u0438\u0432\u0430\u0435\u0448\u044C\u0441\u044F \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u2014 \u0434\u0435\u0440\u0436\u0438 \u043A\u043E\u0440\u043F\u0443\u0441 \u043A\u0430\u043A \u0441\u0442\u043E\u043B"],
+          prog: "10\u043F\u043E\u0432\u0442\u219212\u043F\u043E\u0432\u0442\u219212\u043F\u043E\u0432\u0442+\u043B\u0435\u043D\u0442\u0430 \u043D\u0430 \u043B\u043E\u0434\u044B\u0436\u043A\u0435"
+        }
+      ],
+      cooldown: [
+        {
+          name: "\u0414\u0435\u0442\u0441\u043A\u0430\u044F \u043F\u043E\u0437\u0430",
+          dur: "90 \u0441\u0435\u043A",
+          svgKey: "generic",
+          body: ["\u041A\u043E\u043B\u0435\u043D\u0438 \u0448\u0438\u0440\u043E\u043A\u043E, \u0441\u044F\u0434\u044C \u043D\u0430 \u043F\u044F\u0442\u043A\u0438, \u0440\u0443\u043A\u0438 \u0432\u044B\u0442\u044F\u043D\u0443\u0442\u044B \u0432\u043F\u0435\u0440\u0451\u0434", "\u041B\u043E\u0431 \u043E\u043F\u0443\u0441\u0442\u0438 \u043D\u0430 \u043F\u043E\u043B \u0438\u043B\u0438 \u043F\u043E\u0434\u0443\u0448\u043A\u0443", "\u0414\u044B\u0448\u0438 \u0433\u043B\u0443\u0431\u043E\u043A\u043E \u2014 \u043D\u0430 \u0432\u044B\u0434\u043E\u0445\u0435 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u0439 \u0441\u043F\u0438\u043D\u0443 \u0432\u043D\u0438\u0437", "\u0427\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u0448\u0438\u0440\u043E\u0447\u0430\u0439\u0448\u0438\u0445 \u0438 \u0432\u0434\u043E\u043B\u044C \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430"]
+        },
+        {
+          name: "\u0420\u0430\u0441\u0442\u044F\u0436\u043A\u0430 \u0433\u0440\u0443\u0434\u043D\u044B\u0445 \u0443 \u0441\u0442\u0435\u043D\u044B",
+          dur: "45 \u0441\u0435\u043A/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          svgKey: null,
+          body: ["\u0420\u0443\u043A\u0430 \u043D\u0430 \u0441\u0442\u0435\u043D\u0435 \u043F\u043E\u0434 \u0443\u0433\u043B\u043E\u043C 90\xB0 \u2014 \u043B\u0430\u0434\u043E\u043D\u044C \u043A \u0441\u0442\u0435\u043D\u0435", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0440\u0430\u0437\u0432\u043E\u0440\u0430\u0447\u0438\u0432\u0430\u0439 \u043A\u043E\u0440\u043F\u0443\u0441 \u043E\u0442 \u0441\u0442\u0435\u043D\u044B", "\u0421\u0442\u043E\u043F \u043A\u043E\u0433\u0434\u0430 \u043F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u0433\u0440\u0443\u0434\u0438 \u0438 \u043F\u043B\u0435\u0447\u0435", "\u041D\u0435 \u0444\u043E\u0440\u0441\u0438\u0440\u0443\u0439 \u2014 \u043C\u044F\u0433\u043A\u043E \u0438 \u0433\u043B\u0443\u0431\u043E\u043A\u043E \u0434\u044B\u0448\u0438"]
+        },
+        {
+          name: "\u0420\u0430\u0441\u043A\u0440\u044B\u0442\u0438\u0435 \u0433\u0440\u0443\u0434\u043D\u043E\u0433\u043E \u043E\u0442\u0434\u0435\u043B\u0430 \u043D\u0430 \u0432\u0430\u043B\u0438\u043A\u0435",
+          dur: "2\u20133 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041F\u0435\u043D\u043D\u044B\u0439 \u0432\u0430\u043B\u0438\u043A \u043F\u043E\u043F\u0435\u0440\u0451\u043A \u0441\u043F\u0438\u043D\u044B \u043F\u043E\u0434 \u043B\u043E\u043F\u0430\u0442\u043A\u0430\u043C\u0438", "\u0420\u0443\u043A\u0438 \u0437\u0430 \u0433\u043E\u043B\u043E\u0432\u043E\u0439 \u0438\u043B\u0438 \u0441\u043A\u0440\u0435\u0449\u0435\u043D\u044B \u043D\u0430 \u0433\u0440\u0443\u0434\u0438", "\u041C\u044F\u0433\u043A\u043E \u043F\u0440\u043E\u0433\u0438\u0431\u0430\u0439\u0441\u044F \u043D\u0430\u0437\u0430\u0434, \u0434\u044B\u0448\u0438 \u0433\u043B\u0443\u0431\u043E\u043A\u043E", "\u041C\u043E\u0436\u043D\u043E \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043F\u0435\u0440\u0435\u043A\u0430\u0442\u044B\u0432\u0430\u0442\u044C \u043F\u043E \u0433\u0440\u0443\u0434\u043D\u043E\u043C\u0443 \u043E\u0442\u0434\u0435\u043B\u0443", "\u042D\u0442\u043E \u043E\u0434\u0438\u043D \u0438\u0437 \u043B\u0443\u0447\u0448\u0438\u0445 \u0441\u043F\u043E\u0441\u043E\u0431\u043E\u0432 \u043A\u043E\u0440\u0440\u0435\u043A\u0446\u0438\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0430"]
+        },
+        {
+          name: "\u0414\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u044B\u0445\u0430\u043D\u0438\u0435",
+          dur: "2 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041B\u0451\u0436\u0430. \u0412\u0434\u043E\u0445 \u2014 \u0436\u0438\u0432\u043E\u0442 \u0438 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u044F\u044E\u0442\u0441\u044F", "\u0412\u044B\u0434\u043E\u0445 \u2014 \u043B\u0451\u0433\u043A\u043E\u0435 \u0432\u0442\u044F\u0433\u0438\u0432\u0430\u043D\u0438\u0435 \u0436\u0438\u0432\u043E\u0442\u0430", "\u041D\u0435 \u0441\u0436\u0438\u043C\u0430\u0439 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435", "\u041E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E \u043F\u0440\u0438 \u0441\u043F\u0430\u0437\u043C\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430"]
+        }
+      ]
+    },
+    {
+      id: "C",
+      name: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B + \u041D\u043E\u0433\u0438",
+      emoji: "🔥",
+      clr: C.sand,
+      clrS: C.sandSoft,
+      clrD: C.sandDeep,
+      totalMin: 80,
+      intensity: "\u0412\u044B\u0441\u043E\u043A\u0430\u044F",
+      warmup: [
+        {
+          name: "\u0425\u043E\u0434\u044C\u0431\u0430 \u0441 \u043D\u0430\u043A\u043B\u043E\u043D\u043E\u043C \u043D\u0430 \u0434\u043E\u0440\u043E\u0436\u043A\u0435",
+          dur: "5 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041D\u0430\u043A\u043B\u043E\u043D 3\u20135%, \u0442\u0435\u043C\u043F 5.5\u20136 \u043A\u043C/\u0447", "\u041D\u0435 \u0434\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u043F\u043E\u0440\u0443\u0447\u043D\u0438 \u2014 \u043F\u0443\u0441\u0442\u044C \u0440\u0430\u0431\u043E\u0442\u0430\u044E\u0442 \u044F\u0433\u043E\u0434\u0438\u0446\u044B", "\u042F\u0433\u043E\u0434\u0438\u0446\u044B \u0430\u043A\u0442\u0438\u0432\u0438\u0440\u0443\u044E\u0442\u0441\u044F \u0432 \u0433\u043E\u0440\u0443 \u0437\u043D\u0430\u0447\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u043B\u0443\u0447\u0448\u0435, \u0447\u0435\u043C \u043D\u0430 \u043F\u043B\u043E\u0441\u043A\u043E\u0441\u0442\u0438", "\u041F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0439 \u0440\u0430\u0431\u043E\u0442\u0443 \u0437\u0430\u0434\u043D\u0435\u0439 \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430"]
+        },
+        {
+          name: "\u0412\u044B\u043F\u0430\u0434\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435 \u0431\u0435\u0437 \u0432\u0435\u0441\u0430",
+          dur: "2 \xD7 10/\u043D\u043E\u0433\u0430",
+          svgKey: "lunge",
+          body: ["\u0428\u0430\u0433 \u0432\u043F\u0435\u0440\u0451\u0434 \u2014 \u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u0448\u0430\u0433", "\u041E\u043F\u0443\u0441\u0442\u0438 \u0437\u0430\u0434\u043D\u0435\u0435 \u043A\u043E\u043B\u0435\u043D\u043E \u043A \u043F\u043E\u043B\u0443 (\u043D\u0435 \u043A\u0430\u0441\u0430\u044F\u0441\u044C)", "\u041F\u0435\u0440\u0435\u0434\u043D\u0435\u0435 \u043A\u043E\u043B\u0435\u043D\u043E \u043D\u0430\u0434 \u043B\u043E\u0434\u044B\u0436\u043A\u043E\u0439 \u2014 \u043D\u0435 \u0437\u0430 \u043D\u043E\u0441\u043E\u043A!", "\u041E\u0442\u0442\u043E\u043B\u043A\u043D\u0438\u0441\u044C \u043F\u044F\u0442\u043A\u043E\u0439 \u043F\u0435\u0440\u0435\u0434\u043D\u0435\u0439 \u043D\u043E\u0433\u0438 \u0438 \u0432\u0435\u0440\u043D\u0438\u0441\u044C"]
+        },
+        {
+          name: "\u041F\u0440\u0438\u0441\u0435\u0434\u0430\u043D\u0438\u044F \u043F\u043B\u0438\u0435 \u0431\u0435\u0437 \u0432\u0435\u0441\u0430",
+          dur: "2 \xD7 12",
+          svgKey: null,
+          body: ["\u0421\u0442\u043E\u043F\u044B \u0448\u0438\u0440\u043E\u043A\u043E, \u043D\u043E\u0441\u043A\u0438 45\xB0", "\u041F\u0440\u0438\u0441\u0435\u0434 \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u044B\u0439 \u2014 3 \u0441\u0435\u043A \u0432\u043D\u0438\u0437", "\u0421\u043F\u0438\u043D\u0430 \u043F\u0440\u044F\u043C\u0430\u044F, \u043A\u043E\u043B\u0435\u043D\u0438 \u043D\u0430\u0434 \u043D\u043E\u0441\u043A\u0430\u043C\u0438", "\u041F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0439 \u0440\u0430\u0431\u043E\u0442\u0443 \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0435\u0439 \u0447\u0430\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430"]
+        }
+      ],
+      exercises: [
+        {
+          id: "c1",
+          name: "\u041F\u0440\u0438\u0441\u0435\u0434\u0430\u043D\u0438\u044F \u0421\u043C\u0438\u0442 (\u0441\u0443\u043C\u043E)",
+          sets: 4,
+          repsT: "12",
+          rest: 90,
+          wt: "20\u201360 \u043A\u0433",
+          muscle: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B \xB7 \u041F\u0440\u0438\u0432\u043E\u0434\u044F\u0449\u0438\u0435 \xB7 \u041A\u0432\u0430\u0434\u0440\u0438\u0446\u0435\u043F\u0441",
+          svgKey: "squat",
+          scol: "\u2713",
+          scolNote: "\u0422\u0440\u0435\u043D\u0430\u0436\u0451\u0440 \u0421\u043C\u0438\u0442\u0430 \u0441\u043D\u0438\u043C\u0430\u0435\u0442 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0443 \u0441 \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430",
+          feel: { good: "\u0420\u0430\u0431\u043E\u0442\u0430 \u044F\u0433\u043E\u0434\u0438\u0446 \u0438 \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0435\u0439 \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430", bad: "\u0411\u043E\u043B\u044C \u0432 \u043A\u043E\u043B\u0435\u043D\u044F\u0445" },
+          steps: ["\u0421\u0442\u043E\u043F\u044B \u0448\u0438\u0440\u043E\u043A\u043E \u2014 \u043D\u0430 15\u201320 \u0441\u043C \u0448\u0438\u0440\u0435 \u043F\u043B\u0435\u0447, \u043D\u043E\u0441\u043A\u0438 45\xB0", "\u0428\u0442\u0430\u043D\u0433\u0430 \u043D\u0430 \u0442\u0440\u0430\u043F\u0435\u0446\u0438\u044F\u0445 (\u043D\u0435 \u043D\u0430 \u0448\u0435\u0435!) \u2014 \u043F\u043E\u0434\u043B\u043E\u0436\u0438 \u043C\u044F\u0433\u043A\u0438\u0439 \u0432\u0430\u043B\u0438\u043A", "\u041F\u0440\u0438\u0441\u0435\u0434 \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u044B\u0439 \u2014 3 \u0441\u0435\u043A \u0432\u043D\u0438\u0437 \u0434\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u0438 \u0431\u0451\u0434\u0435\u0440", "\u041A\u043E\u043B\u0435\u043D\u0438 \u0441\u0442\u0440\u043E\u0433\u043E \u043D\u0430\u0434 \u043D\u043E\u0441\u043A\u0430\u043C\u0438 \u2014 \u043F\u0440\u0435\u0434\u0441\u0442\u0430\u0432\u043B\u044F\u0439, \u0447\u0442\u043E \u0440\u0430\u0437\u0434\u0432\u0438\u0433\u0430\u0435\u0448\u044C \u043F\u043E\u043B \u043D\u043E\u0433\u0430\u043C\u0438", "\u0412\u0441\u0442\u0430\u0432\u0430\u0439, \u043E\u0442\u0442\u0430\u043B\u043A\u0438\u0432\u0430\u044F\u0441\u044C \u043F\u044F\u0442\u043A\u0430\u043C\u0438. \u0412\u044B\u043F\u0440\u044F\u043C\u043B\u044F\u0439 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u043D\u0430\u0432\u0435\u0440\u0445\u0443"],
+          err: ["\u041A\u043E\u043B\u0435\u043D\u0438 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u0432\u043D\u0443\u0442\u0440\u044C \u2192 \u043A\u0440\u0438\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u043E\u043F\u0430\u0441\u043D\u043E!", "\u041F\u044F\u0442\u043A\u0438 \u043E\u0442\u0440\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u2192 \u043F\u043E\u0434\u043B\u043E\u0436\u0438 \u0431\u043B\u0438\u043D\u044B \u043F\u043E\u0434 \u043F\u044F\u0442\u043A\u0438"],
+          prog: "20\u043A\u0433\u219235\u043A\u0433\u219250\u043A\u0433\u219260\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "c2",
+          name: "\u0412\u044B\u043F\u0430\u0434\u044B \u0441 \u0433\u0430\u043D\u0442\u0435\u043B\u044F\u043C\u0438 (\u0445\u043E\u0434\u044F\u0447\u0438\u0435)",
+          sets: 3,
+          repsT: "10/\u043D\u043E\u0433\u0430",
+          rest: 75,
+          wt: "6\u201315 \u043A\u0433/\u0440\u0443\u043A\u0430",
+          muscle: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B \xB7 \u041A\u0432\u0430\u0434\u0440\u0438\u0446\u0435\u043F\u0441",
+          svgKey: "lunge",
+          scol: "\u26A0",
+          scolNote: "\u0421\u043B\u0435\u0434\u0438 \u0437\u0430 \u043F\u0440\u044F\u043C\u043E\u0439 \u0441\u043F\u0438\u043D\u043E\u0439",
+          feel: { good: "\u0420\u0430\u0431\u043E\u0442\u0430 \u044F\u0433\u043E\u0434\u0438\u0446 \u0438 \u043F\u0435\u0440\u0435\u0434\u043D\u0435\u0439 \u0447\u0430\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430", bad: "\u0411\u043E\u043B\u044C \u0432 \u043F\u0435\u0440\u0435\u0434\u043D\u0435\u043C \u043A\u043E\u043B\u0435\u043D\u0435" },
+          steps: ["\u0421\u0442\u043E\u0438\u0448\u044C \u043F\u0440\u044F\u043C\u043E, \u0433\u0430\u043D\u0442\u0435\u043B\u0438 \u043F\u043E \u0431\u043E\u043A\u0430\u043C", "\u0411\u043E\u043B\u044C\u0448\u043E\u0439 \u0448\u0430\u0433 \u0432\u043F\u0435\u0440\u0451\u0434", "\u0417\u0430\u0434\u043D\u0435\u0435 \u043A\u043E\u043B\u0435\u043D\u043E \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F \u043A \u043F\u043E\u043B\u0443 \u2014 \u043D\u0435 \u043A\u0430\u0441\u0430\u0435\u0442\u0441\u044F!", "\u041F\u0435\u0440\u0435\u0434\u043D\u0435\u0435 \u043A\u043E\u043B\u0435\u043D\u043E \u043D\u0430\u0434 \u043B\u043E\u0434\u044B\u0436\u043A\u043E\u0439 \u2014 \u043D\u0435 \u0437\u0430 \u043D\u043E\u0441\u043E\u043A", "\u041A\u043E\u0440\u043F\u0443\u0441 \u0432\u0435\u0440\u0442\u0438\u043A\u0430\u043B\u044C\u043D\u044B\u0439. \u0412\u0441\u0442\u0430\u043D\u044C, \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u0448\u0430\u0433"],
+          err: ["\u041C\u0430\u043B\u0435\u043D\u044C\u043A\u0438\u0439 \u0448\u0430\u0433 \u2192 \u043A\u043E\u043B\u0435\u043D\u043E \u0443\u0445\u043E\u0434\u0438\u0442 \u0437\u0430 \u043D\u043E\u0441\u043E\u043A", "\u041D\u0430\u043A\u043B\u043E\u043D \u043A\u043E\u0440\u043F\u0443\u0441\u0430 \u0432\u043F\u0435\u0440\u0451\u0434 \u2192 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043D\u0430 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0443"],
+          prog: "6\u043A\u0433\u21928\u043A\u0433\u219212\u043A\u0433\u219215\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)",
+          beginner: "\u041F\u0435\u0440\u0432\u044B\u0435 2 \u043D\u0435\u0434 \u2014 \u0434\u0435\u043B\u0430\u0439 \u0432\u044B\u043F\u0430\u0434\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435 (\u043D\u0435 \u0445\u043E\u0434\u044F\u0447\u0438\u0435) \u0434\u0435\u0440\u0436\u0430\u0441\u044C \u0437\u0430 \u0441\u0442\u0435\u043D\u0443 \u0438\u043B\u0438 \u0441\u0442\u043E\u0439\u043A\u0443. \u041D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0442\u0430 \u0436\u0435, \u0431\u0430\u043B\u0430\u043D\u0441 \u043F\u0440\u043E\u0449\u0435."
+        },
+        {
+          id: "c3",
+          name: "\u0420\u0443\u043C\u044B\u043D\u0441\u043A\u0430\u044F \u0442\u044F\u0433\u0430 \u0441 \u0433\u0430\u043D\u0442\u0435\u043B\u044F\u043C\u0438",
+          sets: 4,
+          repsT: "12",
+          rest: 75,
+          wt: "10\u201322 \u043A\u0433/\u0440\u0443\u043A\u0430",
+          muscle: "\u0417\u0430\u0434\u043D\u044F\u044F \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u044C \u0431\u0435\u0434\u0440\u0430 \xB7 \u042F\u0433\u043E\u0434\u0438\u0446\u044B",
+          svgKey: "rdl",
+          scol: "\u26A0",
+          scolNote: "\u041D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A \u2014 \u0431\u0435\u0437 \u043E\u043A\u0440\u0443\u0433\u043B\u0435\u043D\u0438\u044F!",
+          feel: { good: "\u0420\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u043F\u043E\u0434 \u043A\u043E\u043B\u0435\u043D\u043E\u043C, \u0436\u0436\u0435\u043D\u0438\u0435 \u0432 \u044F\u0433\u043E\u0434\u0438\u0446\u0430\u0445 \u043D\u0430\u0432\u0435\u0440\u0445\u0443", bad: "\u0411\u043E\u043B\u044C \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0435" },
+          steps: ["\u0421\u0442\u043E\u0438\u0448\u044C \u043F\u0440\u044F\u043C\u043E, \u0433\u0430\u043D\u0442\u0435\u043B\u0438 \u043F\u0435\u0440\u0435\u0434 \u0431\u0451\u0434\u0440\u0430\u043C\u0438", "\u041B\u0451\u0433\u043A\u0438\u0439 \u0438\u0437\u0433\u0438\u0431 \u0432 \u043A\u043E\u043B\u0435\u043D\u044F\u0445 \u2014 \u0437\u0430\u0444\u0438\u043A\u0441\u0438\u0440\u0443\u0439, \u043D\u0435 \u043C\u0435\u043D\u044F\u0439", "\u0422\u0430\u0437 \u043E\u0442\u0432\u043E\u0434\u0438 \u043D\u0430\u0437\u0430\u0434 \u2014 \u0433\u0430\u043D\u0442\u0435\u043B\u0438 \u0441\u043A\u043E\u043B\u044C\u0437\u044F\u0442 \u0432\u0434\u043E\u043B\u044C \u043D\u043E\u0433 \u0432\u043D\u0438\u0437", "\u0421\u043F\u0438\u043D\u0430 \u043F\u0440\u044F\u043C\u0430\u044F, \u043D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u0430\u044F \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0430 \u043D\u0430 \u0432\u0441\u0451\u043C \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0438!", "\u041E\u043F\u0443\u0441\u043A\u0430\u0439 \u0434\u043E \u043D\u0430\u0442\u044F\u0436\u0435\u043D\u0438\u044F \u043F\u043E\u0434 \u043A\u043E\u043B\u0435\u043D\u043E\u043C (\u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0441\u0435\u0440\u0435\u0434\u0438\u043D\u0430 \u0433\u043E\u043B\u0435\u043D\u0438)", "\u041F\u043E\u0434\u043D\u0438\u043C\u0430\u0439\u0441\u044F: \u0442\u043E\u043B\u043A\u0430\u0439 \u0431\u0451\u0434\u0440\u0430 \u0432\u043F\u0435\u0440\u0451\u0434, \u0441\u043E\u0436\u043C\u0438 \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u043D\u0430\u0432\u0435\u0440\u0445\u0443"],
+          err: ["\u041E\u043A\u0440\u0443\u0433\u043B\u0435\u043D\u0438\u0435 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u044B \u2192 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u043E\u043F\u0430\u0441\u043D\u043E!", "\u0413\u0430\u043D\u0442\u0435\u043B\u0438 \u043E\u0442\u0445\u043E\u0434\u044F\u0442 \u043E\u0442 \u043D\u043E\u0433 \u2192 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0443"],
+          prog: "10\u043A\u0433\u219214\u043A\u0433\u219218\u043A\u0433\u219222\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)",
+          beginner: "\u041F\u0435\u0440\u0432\u044B\u0435 2 \u043D\u0435\u0434 \u2014 \u0434\u0435\u043B\u0430\u0439 \u0441 \u043B\u0451\u0433\u043A\u0438\u043C\u0438 \u0433\u0430\u043D\u0442\u0435\u043B\u044F\u043C\u0438 4\u20136\u043A\u0433 \u043F\u0435\u0440\u0435\u0434 \u0437\u0435\u0440\u043A\u0430\u043B\u043E\u043C, \u0441\u043B\u0435\u0434\u0438 \u0437\u0430 \u043F\u0440\u044F\u043C\u043E\u0439 \u0441\u043F\u0438\u043D\u043E\u0439. \u041C\u043E\u0436\u043D\u043E \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u044C \u043D\u0430 \u0441\u0433\u0438\u0431\u0430\u043D\u0438\u0435 \u043D\u043E\u0433 \u0432 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0435 \u043B\u0451\u0436\u0430 (\u0442\u043E \u0436\u0435 \u0431\u0435\u0434\u0440\u043E, \u043D\u043E \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u0435\u0435)."
+        },
+        {
+          id: "c4",
+          name: "\u0421\u0432\u0435\u0434\u0435\u043D\u0438\u0435 \u043D\u043E\u0433 \u0432 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0435",
+          sets: 3,
+          repsT: "15",
+          rest: 60,
+          wt: "30\u201360 \u043A\u0433",
+          muscle: "\u041F\u0440\u0438\u0432\u043E\u0434\u044F\u0449\u0438\u0435 \xB7 \u0422\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E (\u043A\u043E\u0441\u0432\u0435\u043D\u043D\u043E)",
+          svgKey: "adductor",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E \u2014 \u0441\u0438\u0434\u044F\u0447\u0435\u0435 \u043F\u043E\u043B\u043E\u0436\u0435\u043D\u0438\u0435",
+          feel: { good: "\u0421\u0436\u0430\u0442\u0438\u0435 \u043F\u043E \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0435\u0439 \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430", bad: "\u0411\u043E\u043B\u044C \u0432 \u0442\u0430\u0437\u043E\u0431\u0435\u0434\u0440\u0435\u043D\u043D\u043E\u043C \u0441\u0443\u0441\u0442\u0430\u0432\u0435" },
+          steps: ["\u0421\u043F\u0438\u043D\u0430 \u043F\u0440\u0438\u0436\u0430\u0442\u0430 \u043A \u0441\u043F\u0438\u043D\u043A\u0435 \u0442\u0440\u0435\u043D\u0430\u0436\u0451\u0440\u0430 \u043D\u0430 \u0432\u0441\u0451\u043C \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0438", "\u041D\u0430\u0441\u0442\u0440\u043E\u0439 \u0448\u0438\u0440\u0438\u043D\u0443: \u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435, \u0431\u0435\u0437 \u043E\u0441\u0442\u0440\u043E\u0433\u043E \u0434\u0438\u0441\u043A\u043E\u043C\u0444\u043E\u0440\u0442\u0430", "\u0421\u0432\u043E\u0434\u0438\u0448\u044C \u043D\u043E\u0433\u0438 \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u2014 2 \u0441\u0435\u043A\u0443\u043D\u0434\u044B", "\u0412 \u0441\u0432\u0435\u0434\u0451\u043D\u043D\u043E\u043C \u043F\u043E\u043B\u043E\u0436\u0435\u043D\u0438\u0438 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0441\u044C 1 \u0441\u0435\u043A\u0443\u043D\u0434\u0443", "\u2B50 \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0440\u0430\u0437\u0432\u043E\u0434\u0438\u0448\u044C \u2014 4 \u0441\u0435\u043A\u0443\u043D\u0434\u044B! \u0412\u0430\u0436\u043D\u0435\u0435, \u0447\u0435\u043C \u0441\u0432\u0435\u0434\u0435\u043D\u0438\u0435"],
+          err: ["\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u044B\u0441\u0442\u0440\u043E\u0435 \u0440\u0430\u0437\u0432\u0435\u0434\u0435\u043D\u0438\u0435 \u2192 \u043D\u0435\u0442 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0430 \u043C\u044B\u0448\u0446\u044B", "\u0421\u043F\u0438\u043D\u0430 \u043E\u0442\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u0440\u0438 \u0441\u0432\u0435\u0434\u0435\u043D\u0438\u0438"],
+          prog: "30\u043A\u0433\u219240\u043A\u0433\u219250\u043A\u0433\u219260\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "c5",
+          name: "\u041F\u043E\u0434\u044A\u0451\u043C \u043D\u0430 \u043D\u043E\u0441\u043A\u0438",
+          sets: 3,
+          repsT: "20",
+          rest: 45,
+          wt: "\u0432\u0435\u0441 \u0442\u0435\u043B\u0430 \u2192 30\u201340 \u043A\u0433",
+          muscle: "\u0418\u043A\u0440\u043E\u043D\u043E\u0436\u043D\u0430\u044F \xB7 \u041A\u0430\u043C\u0431\u0430\u043B\u043E\u0432\u0438\u0434\u043D\u0430\u044F",
+          svgKey: "calf_raise",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0416\u0436\u0435\u043D\u0438\u0435 \u0432 \u0438\u043A\u0440\u0435", bad: "\u0411\u043E\u043B\u044C \u0432 \u0430\u0445\u0438\u043B\u043B\u0435\u0441\u0435" },
+          steps: ["\u0421\u0442\u043E\u043F\u044B \u043D\u0430 \u043A\u0440\u0430\u044E \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u044B \u2014 \u043F\u044F\u0442\u043A\u0438 \u0441\u0432\u0438\u0441\u0430\u044E\u0442 \u0432\u043D\u0438\u0437", "\u041E\u043F\u0443\u0441\u0442\u0438\u0441\u044C \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0432\u043D\u0438\u0437 \u2014 \u0433\u043B\u0443\u0431\u043E\u043A\u043E\u0435 \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0438\u043A\u0440\u044B", "\u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043F\u043E\u0434\u043D\u0438\u043C\u0438\u0441\u044C \u043D\u0430 \u043D\u043E\u0441\u043A\u0438 \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0432\u044B\u0441\u043E\u043A\u043E", "\u0417\u0430\u0434\u0435\u0440\u0436\u0438\u0441\u044C 1 \u0441\u0435\u043A\u0443\u043D\u0434\u0443 \u043D\u0430\u0432\u0435\u0440\u0445\u0443", "\u041E\u043F\u0443\u0441\u043A\u0430\u0439 \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0437\u0430 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B"],
+          err: ["\u041D\u0435\u0442 \u043F\u043E\u043B\u043D\u043E\u0439 \u0430\u043C\u043F\u043B\u0438\u0442\u0443\u0434\u044B \u2192 \u0442\u0435\u0440\u044F\u0435\u0448\u044C \u043F\u043E\u043B\u043E\u0432\u0438\u043D\u0443 \u044D\u0444\u0444\u0435\u043A\u0442\u0430", "\u041F\u0440\u044B\u0436\u043A\u043E\u0432\u043E\u0435 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435 \u0431\u0435\u0437 \u043A\u043E\u043D\u0442\u0440\u043E\u043B\u044F"],
+          prog: "\u0432\u0435\u0441 \u0442\u0435\u043B\u0430\u219220\u043A\u0433\u219230\u043A\u0433\u219240\u043A\u0433 (\u043F\u043E 2 \u043D\u0435\u0434\u0435\u043B\u0438)"
+        },
+        {
+          id: "c6",
+          name: "\u0412\u0430\u043A\u0443\u0443\u043C \u0436\u0438\u0432\u043E\u0442\u0430",
+          sets: 3,
+          repsT: "5 \xD7 10 \u0441\u0435\u043A",
+          rest: 60,
+          wt: "\u2014",
+          muscle: "\u041F\u043E\u043F\u0435\u0440\u0435\u0447\u043D\u0430\u044F \u043C\u044B\u0448\u0446\u0430 \xB7 \u0422\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E",
+          svgKey: "vacuum",
+          scol: "\u2713",
+          scolNote: "\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E",
+          feel: { good: "\u0413\u043B\u0443\u0431\u043E\u043A\u043E\u0435 \u0432\u0442\u044F\u0433\u0438\u0432\u0430\u043D\u0438\u0435 \u0438\u0437\u043D\u0443\u0442\u0440\u0438, \u0436\u0438\u0432\u043E\u0442 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432\u0432\u0435\u0440\u0445", bad: "\u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435 \u0432 \u044F\u0433\u043E\u0434\u0438\u0446\u0430\u0445 \u0438\u043B\u0438 \u043D\u043E\u0433\u0430\u0445" },
+          steps: ["\u0412\u0441\u0442\u0430\u043D\u044C \u0438\u043B\u0438 \u0441\u0442\u0430\u043D\u044C \u043D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0438", "\u0421\u0434\u0435\u043B\u0430\u0439 \u043F\u043E\u043B\u043D\u044B\u0439 \u0432\u044B\u0434\u043E\u0445 \u2014 \u0432\u0435\u0441\u044C \u0432\u043E\u0437\u0434\u0443\u0445 \u0438\u0437 \u043B\u0451\u0433\u043A\u0438\u0445", "\u041D\u0435 \u0434\u044B\u0448\u0430, \u0432\u0442\u044F\u043D\u0438 \u0436\u0438\u0432\u043E\u0442 \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0432\u043D\u0443\u0442\u0440\u044C \u0438 \u0432\u0432\u0435\u0440\u0445 \u043F\u043E\u0434 \u0440\u0451\u0431\u0440\u0430", "\u0423\u0434\u0435\u0440\u0436\u0438 8\u201310 \u0441\u0435\u043A\u0443\u043D\u0434. \u0420\u0430\u0441\u0441\u043B\u0430\u0431\u044C\u0441\u044F. \u0421\u0434\u0435\u043B\u0430\u0439 \u0432\u0434\u043E\u0445", "\u041D\u0430 \u0432\u0434\u043E\u0445\u0435: \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u044F\u0435\u0442\u0441\u044F \u0438 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F"],
+          err: ["\u0421\u0436\u0438\u043C\u0430\u0435\u0448\u044C \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u2192 \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u044F", "\u0417\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0448\u044C \u0434\u044B\u0445\u0430\u043D\u0438\u0435 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0434\u043E\u043B\u0433\u043E \u2192 \u0441\u0434\u0435\u043B\u0430\u0439 \u043C\u0435\u043D\u044C\u0448\u0435"],
+          prog: "5\u0441\u0435\u043A\xD75\u219210\u0441\u0435\u043A\xD75\u219215\u0441\u0435\u043A\xD75"
+        }
+      ],
+      cooldown: [
+        {
+          name: "\u0420\u0430\u0441\u0442\u044F\u0436\u043A\u0430 \u0437\u0430\u0434\u043D\u0435\u0439 \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u0438 \u0431\u0435\u0434\u0440\u0430 \u043B\u0451\u0436\u0430",
+          dur: "60 \u0441\u0435\u043A/\u043D\u043E\u0433\u0430",
+          svgKey: "generic",
+          body: ["\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u041F\u043E\u0434\u043D\u0438\u043C\u0438 \u043E\u0434\u043D\u0443 \u043D\u043E\u0433\u0443, \u043E\u0431\u043D\u0438\u043C\u0438 \u0437\u0430 \u0431\u0435\u0434\u0440\u043E", "\u0422\u044F\u043D\u0438 \u043D\u043E\u0433\u0443 \u043A \u0433\u0440\u0443\u0434\u0438 \u2014 \u0434\u0440\u0443\u0433\u0430\u044F \u0432\u044B\u0442\u044F\u043D\u0443\u0442\u0430 \u043D\u0430 \u043F\u043E\u043B\u0443", "\u041D\u043E\u0433\u0430 \u043C\u043E\u0436\u0435\u0442 \u0431\u044B\u0442\u044C \u0441\u043E\u0433\u043D\u0443\u0442\u0430 \u2014 \u0431\u0435\u0437 \u0431\u043E\u043B\u0438, \u0442\u043E\u043B\u044C\u043A\u043E \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435", "\u041F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0439 \u0440\u0430\u0441\u0442\u044F\u0436\u0435\u043D\u0438\u0435 \u0441\u0437\u0430\u0434\u0438 \u0431\u0435\u0434\u0440\u0430"]
+        },
+        {
+          name: "\u0420\u0430\u0441\u0442\u044F\u0436\u043A\u0430 \u043A\u0432\u0430\u0434\u0440\u0438\u0446\u0435\u043F\u0441\u0430 \u0441\u0442\u043E\u044F",
+          dur: "45 \u0441\u0435\u043A/\u043D\u043E\u0433\u0430",
+          svgKey: null,
+          body: ["\u0414\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u0441\u0442\u0435\u043D\u0443 \u0440\u0443\u043A\u043E\u0439", "\u0421\u043E\u0433\u043D\u0438 \u043D\u043E\u0433\u0443 \u043D\u0430\u0437\u0430\u0434, \u0432\u043E\u0437\u044C\u043C\u0438\u0441\u044C \u0440\u0443\u043A\u043E\u0439 \u0437\u0430 \u0441\u0442\u043E\u043F\u0443", "\u0422\u044F\u043D\u0438 \u043F\u044F\u0442\u043A\u0443 \u043A \u044F\u0433\u043E\u0434\u0438\u0446\u0435 \u2014 \u043A\u043E\u043B\u0435\u043D\u043E \u0441\u043C\u043E\u0442\u0440\u0438\u0442 \u0432\u043D\u0438\u0437", "\u0422\u0430\u0437 \u043D\u0435 \u043F\u0435\u0440\u0435\u043A\u0430\u0448\u0438\u0432\u0430\u0439, \u0441\u0442\u043E\u0439 \u043F\u0440\u044F\u043C\u043E"]
+        },
+        {
+          name: "Happy Baby \u2014 \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430",
+          dur: "2 \u043C\u0438\u043D",
+          svgKey: null,
+          body: ["\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u0421\u043E\u0433\u043D\u0438 \u043D\u043E\u0433\u0438, \u0432\u043E\u0437\u044C\u043C\u0438\u0441\u044C \u0437\u0430 \u0432\u043D\u0435\u0448\u043D\u0438\u0435 \u0441\u0442\u043E\u0440\u043E\u043D\u044B \u0441\u0442\u043E\u043F", "\u041A\u043E\u043B\u0435\u043D\u0438 \u0442\u044F\u043D\u0438 \u043A \u043F\u043E\u0434\u043C\u044B\u0448\u043A\u0430\u043C, \u0448\u0438\u0440\u043E\u043A\u043E \u0440\u0430\u0437\u0432\u0435\u0434\u0438", "\u0420\u0430\u0441\u0441\u043B\u0430\u0431\u044C \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u2014 \u0432\u0430\u0436\u043D\u043E \u043F\u043E\u0441\u043B\u0435 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0430 \u043D\u043E\u0433\u0438", "\u0414\u044B\u0448\u0438 \u0433\u043B\u0443\u0431\u043E\u043A\u043E, \u043F\u043E\u043A\u0430\u0447\u0438\u0432\u0430\u0439\u0441\u044F \u0438\u0437 \u0441\u0442\u043E\u0440\u043E\u043D\u044B \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443"]
+        }
+      ]
+    }
+  ];
+  function useLS(key, def) {
+    const [v, sv] = useState(() => {
+      try {
+        const s = localStorage.getItem(key);
+        return s !== null ? JSON.parse(s) : def;
+      } catch {
+        return def;
+      }
+    });
+    const set = useCallback((val) => {
+      sv(val);
+      try {
+        localStorage.setItem(key, JSON.stringify(typeof val === "function" ? val(v) : val));
+      } catch {
+      }
+    }, [key]);
+    return [v, set];
+  }
+
+  // ===========================================================================
+  // КЛЮЧЕВЫЕ ДАТЫ ПЛАНА — все даты централизованы тут.
+  // Маша начинает план 25 мая 2026 (пн). Все активности — с понедельника.
+  // ===========================================================================
+  // Хелпер: создаёт дату как 00:00 МЕСТНОГО времени (не UTC).
+  // new Date("2026-05-25") парсится как UTC и в Варшаве (UTC+2) показывается как 02:00 25 мая,
+  // из-за чего расчёт "сколько дней до старта" может ошибиться на 1.
+  const mkd = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0);
+  };
+
+  const KEY_DATES = {
+    planStart:     mkd("2026-05-25"), // начало Недели 1 (пн)
+    planEnd:       mkd("2026-07-26"), // конец Недели 9 (вс)
+    // Подключения препаратов — СОГЛАСОВАНО: наш план, старт 30 мая (сб)
+    forlaxStart:   mkd("2026-05-30"), // Форлакс — старт нашего плана (сб)
+    zincStart:     mkd("2026-05-30"), // Цинк (Zinkorot 25 мг) — старт (сб)
+    ironStart:     mkd("2026-06-02"), // Железо — вт, через день (вт/чт/сб)
+    ironDailyFrom: mkd("2026-06-16"), // Железо ежедневно — через 2 недели
+    perfectilStart:mkd("2026-06-06"), // Перфектил — обеденный блок (сб)
+    omegaStart:    mkd("2026-06-06"), // Омега-3 — обеденный блок (сб)
+    vitDStart:     mkd("2026-06-06"), // Витамин D — обед (сб), 3×/нед
+    niacinStart:   mkd("2026-06-06"), // Ниацинамид — вечер, с 6 июня (сб)
+    aeStart:       mkd("2026-06-08"), // A+E Medana — пн, вечер
+    cysteniumStart:mkd("2026-06-08"), // Цистениум — пн, на ночь
+    biofemaleStart:mkd("2026-06-08"), // Био Фимейл — пн, на ночь
+    pelvicStart:   mkd("2026-06-15"), // Курс тазового дна — с 15 июня
+    gymStart:      mkd("2026-06-10"), // Зал (ср + пт) — ср недели 3
+    runStart:      mkd("2026-06-15"), // Бег / ходьба — пн недели 4
+    pelvicEnd:     mkd("2026-08-16"), // Курс тазового дна — ~2 мес от 15 июня
+    dogLeaveDate:  mkd("2026-05-27"), // Собака уезжает к родителям (ср)
+    dayCStart:     mkd("2026-07-06"), // День C — пн недели 7
+    block7Start:   mkd("2026-07-06"), // Неделя 7 — анализы
+    analysisRemindFrom: mkd("2026-06-29"), // напоминание сдать анализы за неделю
+  };
+
+  // ===========================================================================
+  // ЦИКЛ И ЯРИНА
+  //
+  // У Маши два связанных, но РАЗНЫХ счётчика:
+  //
+  // 1. ЦИКЛ — от первого дня месячных до следующих месячных (28 дней).
+  //    Якорь "cycleAnchor" = первый день последних месячных.
+  //    Используется для прогноза самочувствия и низкой интенсивности.
+  //
+  // 2. ПАЧКА ЯРИНЫ — 21 таблетка + 7 дней перерыва (28 дней).
+  //    Якорь "packAnchor" = первая таблетка ТЕКУЩЕЙ пачки.
+  //    Используется для определения "пьём сегодня Ярину или перерыв".
+  //
+  // ВАЖНО: месячные начинаются ~через 4 дня после последней (21-й) таблетки.
+  // То есть если первая таблетка пачки = 15 мая, последняя = 4 июня,
+  // месячные начинаются ~8 июня. Это совпадает с новым циклом.
+  //
+  // У Маши на момент старта плана (25 мая):
+  //   - Идёт пачка Ярины, первая таблетка была 15 мая
+  //   - Сегодня день 10 пачки (11-я таблетка вечером)
+  //   - Последняя таблетка пачки: 4 июня (21-я)
+  //   - Перерыв: 5—11 июня
+  //   - Следующие месячные: ~8 июня (понедельник)
+  //   - Следующая пачка: 12 июня
+  // ===========================================================================
+  const CYCLE_LEN = 28;
+  const ACTIVE_PILLS = 21;
+  const PERIOD_LENGTH = 5; // длительность месячных в днях
+  const PERIOD_AFTER_LAST_PILL = 4; // (устар.) — оставлено для совместимости
+  // На Ярине «месячные» — это кровотечение отмены в 7-дневный перерыв.
+  // Обычно начинается на 2–3-й день перерыва (т.е. через ~2 дня после последней таблетки).
+  const WITHDRAWAL_BLEED_OFFSET = 2; // дней от последней таблетки до начала кровотечения
+
+  // На Ярине независимого «цикла» нет — всё определяется пачкой.
+  // Единственный якорь, который реально нужен, — первая таблетка текущей пачки.
+  // У Маши первая таблетка была 15 мая 2026 (пт).
+  function defaultPackAnchor() {
+    return "2026-05-15";
+  }
+  // Якорь цикла оставлен для обратной совместимости со старым кодом/данными,
+  // но больше НЕ запрашивается отдельно: он выводится из пачки.
+  function defaultCycleAnchor() {
+    return "2026-05-15";
+  }
+
+  // Возвращает день цикла (1..28). День 1 = первый день месячных.
+  function getCycleDay(date, anchorStr) {
+    const anchor = mkd(anchorStr);
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    const diff = Math.floor((d - anchor) / 86400000);
+    if (diff < 0) {
+      return ((diff % CYCLE_LEN) + CYCLE_LEN) % CYCLE_LEN + 1;
+    }
+    return (diff % CYCLE_LEN) + 1; // 1..28
+  }
+
+  // Возвращает день пачки Ярины (1..28).
+  // 1..21 = таблетка пьётся, 22..28 = перерыв.
+  function getPackDay(date, packAnchorStr) {
+    const anchor = mkd(packAnchorStr);
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    const diff = Math.floor((d - anchor) / 86400000);
+    return ((diff % CYCLE_LEN) + CYCLE_LEN) % CYCLE_LEN + 1;
+  }
+
+  // Сегодня нужно пить Ярину? (true если день 1..21 пачки)
+  function isYarinaActiveToday(date, packAnchorStr) {
+    const pd = getPackDay(date, packAnchorStr);
+    return pd >= 1 && pd <= ACTIVE_PILLS;
+  }
+
+  // Дата начала N-й пачки (1-based) — первая таблетка.
+  function getCycleStart(n, anchorStr) {
+    const anchor = mkd(anchorStr);
+    const result = new Date(anchor);
+    result.setDate(result.getDate() + (n - 1) * CYCLE_LEN);
+    return result;
+  }
+
+  // Дата последней (21-й) таблетки N-й пачки.
+  function getLastPillOfPack(n, packAnchorStr) {
+    const start = getCycleStart(n, packAnchorStr);
+    start.setDate(start.getDate() + ACTIVE_PILLS - 1);
+    return start;
+  }
+
+  // Прогноз начала кровотечения отмены для N-й пачки = последняя таблетка + 2 дня.
+  // Это и есть «месячные» на Ярине. Выводится из пачки → один источник правды.
+  function getPredictedPeriodStart(n, packAnchorStr) {
+    const last = getLastPillOfPack(n, packAnchorStr);
+    last.setDate(last.getDate() + WITHDRAWAL_BLEED_OFFSET);
+    return last;
+  }
+
+  // Возвращает день месячных (1..N) если сегодня попадает на кровотечение отмены, иначе 0.
+  // packAnchorStr — якорь пачки; overrides[n] позволяет вручную поправить фактическую дату.
+  function getPeriodDay(date, packAnchorStr, overrides) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    const anchor = mkd(packAnchorStr);
+    const diff = Math.floor((d - anchor) / 86400000);
+    const packNum = Math.floor(diff / CYCLE_LEN) + 1;
+    for (let n = Math.max(1, packNum - 1); n <= packNum + 1; n++) {
+      const ov = overrides && overrides[n];
+      const periodStart = ov ? mkd(ov) : getPredictedPeriodStart(n, packAnchorStr);
+      const dayInPeriod = Math.floor((d - periodStart) / 86400000) + 1;
+      if (dayInPeriod >= 1 && dayInPeriod <= PERIOD_LENGTH) return dayInPeriod;
+    }
+    return 0;
+  }
+
+  // День 1-3 месячных = лёгкая тренировка (заменяем силовую/кардио на прогулку).
+  function isLowIntensityDay(date, anchorStr, overrides) {
+    const pd = getPeriodDay(date, anchorStr, overrides);
+    return pd >= 1 && pd <= 3;
+  }
+
+  // Сегодня день приёма железа? Первые 2 недели — только вт/чт/сб.
+  // С ironDailyFrom — каждый день.
+  function isIronDay(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    if (d < KEY_DATES.ironStart) return false;
+    if (d >= KEY_DATES.ironDailyFrom) return true;
+    // Первые 2 недели — вт/чт/сб (dayOfWeek: 2, 4, 6 в стандарте)
+    const dow = d.getDay(); // 0=вс, 1=пн, 2=вт, 3=ср, 4=чт, 5=пт, 6=сб
+    return dow === 2 || dow === 4 || dow === 6;
+  }
+
+  // ===========================================================================
+  // ЕДИНЫЙ ИСТОЧНИК ДАННЫХ О ПРЕПАРАТАХ (single source of truth)
+  // Раньше препараты были описаны в 4 местах (DEFAULT_PILLS, таймлайн дня,
+  // недельные блоки, матрица). Теперь модель и фильтр — здесь, на уровне модуля,
+  // и все экраны (список таблеток, «Режим дня», «Сегодня») читают одно и то же.
+  // ===========================================================================
+  const PILLS_LS_KEY = "pillsListV6";
+
+  // Цвета по времени дня
+  const PC = {
+    MORNING: "#BA7517", MORNING_BG: "#FAEEDA",
+    PRELUNCH: "#7A4A1A", PRELUNCH_BG: "#EDDED0",
+    LUNCH: "#3B6D11", LUNCH_BG: "#EAF3DE",
+    EVENING: "#7A4A1A", EVENING_BG: "#EDDED0",
+    NIGHT: "#534AB7", NIGHT_BG: "#EEEDFE",
+  };
+
+  // СОГЛАСОВАНО (наш план): старт 30 мая. Железо — через день с 2 июня.
+  const DEFAULT_PILLS = [
+    { id: "iron", name: "Gentle Iron 25 мг + Витамин C", time: "08:15", color: PC.PRELUNCH, bg: PC.PRELUNCH_BG,
+      note: "Натощак, за 30–45 мин до завтрака. Через день (ВТ/ЧТ/СБ) с 2 июня, ежедневно с 16 июня. Запивать водой или соком — НЕ кофе/чаем/молочным (1–2 ч до и после нельзя). Витамин C усиливает усвоение. Чёрный стул — норма. Gentle Iron (бисглицинат) мягче для ЖКТ.",
+      startDate: "2026-06-02", ironRule: true },
+    { id: "duxet", name: "Дуксет 60 мг", time: "09:00", color: PC.MORNING, bg: PC.MORNING_BG,
+      note: "Антидепрессант (дулоксетин). Утром натощак, в одно и то же время. Принимаешь больше полугода — режим не менять, не пропускать. При резкой отмене — синдром отмены. Частый побочный эффект — запор (поэтому в плане есть Форлакс)." },
+    { id: "perfectil", name: "Перфектил", time: "14:00", color: PC.LUNCH, bg: PC.LUNCH_BG,
+      note: "Только после полноценного обеда! Натощак — тошнота. Содержит железо, цинк, B-группу, витамины A/E. С 6 июня.",
+      startDate: "2026-06-06" },
+    { id: "omega", name: "Омега-3 (2 капсулы)", time: "14:00", color: PC.LUNCH, bg: PC.LUNCH_BG,
+      note: "С обедом (с жирами), 2 капсулы. Противовоспалительный эффект, для холестерина. С 6 июня.",
+      startDate: "2026-06-06" },
+    { id: "vitd", name: "Витамин D 4000 МЕ", time: "14:00", color: PC.LUNCH, bg: PC.LUNCH_BG,
+      note: "Только ПН / СР / СБ (3 раза в неделю). С жирной едой — лучше усваивается. С 6 июня.",
+      startDate: "2026-06-06", weekdays: [0, 2, 5] },
+    { id: "forlax", name: "Форлакс 1 пакет", time: "15:00", color: PC.MORNING, bg: PC.MORNING_BG,
+      note: "Осмотическое слабительное (макрогол). Развести в стакане воды. ОТДЕЛЬНО от других таблеток — минимум 1–2 ч до и после (ускоряет транзит и может снижать всасывание). Работает мягко через 24–48 ч. Безопасен для длительного приёма. Старт 30 мая.",
+      startDate: "2026-05-30" },
+    { id: "zinc", name: "Zinkorot 25 мг", time: "20:00", color: PC.EVENING, bg: PC.EVENING_BG,
+      note: "С ужином или сразу после (иначе тошнит). Между цинком и железом большой разрыв (~12 ч — идеально). Трихолог одобрила приём вместе с Перфектилом. Старт 30 мая.",
+      startDate: "2026-05-30" },
+    { id: "niac", name: "Ниацинамид 500 мг", time: "20:00", color: PC.EVENING, bg: PC.EVENING_BG,
+      note: "Для волос. С ужином — лучше переносится. Это НЕ никотиновая кислота: нет flushing-эффекта и на холестерин не влияет. С 6 июня.",
+      startDate: "2026-06-06" },
+    { id: "ae", name: "A+E Medana (2 капсулы)", time: "20:00", color: PC.EVENING, bg: PC.EVENING_BG,
+      note: "Витамин A+E (Vitaminum A+E Medana 2500 МЕ + 200 мг), 2 капсулы с ужином — жирорастворимые, нужна еда с жирами. Отдельно от витамина C и селена. Доза витамина А безопасная (~5000 МЕ/сут). Витамин E слегка разжижает кровь — учитывать с Омегой и Яриной, сказать врачу перед операциями. С 8 июня.",
+      startDate: "2026-06-08" },
+    { id: "yarina", name: "Ярина", time: "21:00", color: PC.NIGHT, bg: PC.NIGHT_BG,
+      note: "Строго в 21:00. 21 таблетка + 7 дней перерыв. Приложение само скроет в дни перерыва.",
+      yarinaPack: true },
+    { id: "cystenium", name: "Цистениум", time: "22:00", color: PC.NIGHT, bg: PC.NIGHT_BG,
+      note: "Профилактика циститов (клюква + D-манноза + витамин C). На ночь — действующие вещества дольше работают в мочевом пузыре. Запивать водой, пить достаточно жидкости днём. С 8 июня.",
+      startDate: "2026-06-08" },
+    { id: "biofemale", name: "Био Фимейл (пробиотик)", time: "22:00", color: PC.NIGHT, bg: PC.NIGHT_BG,
+      note: "Пробиотик для женщин. На ночь, запивать прохладной/тёплой (не горячей) водой. Поддержка микрофлоры. С 8 июня.",
+      startDate: "2026-06-08" },
+    { id: "mel", name: "Мелатонин 2 мг (опц.)", time: "22:00", color: PC.NIGHT, bg: PC.NIGHT_BG,
+      note: "Опционально, по необходимости. За час до сна. После приёма не лезть в экраны." },
+  ];
+  const BUILTIN_PILL_IDS = DEFAULT_PILLS.map(p => p.id);
+
+  // Загрузка/сохранение списка препаратов (единый стор).
+  function loadPills() {
+    try {
+      const s = localStorage.getItem(PILLS_LS_KEY);
+      if (s) return JSON.parse(s);
+    } catch {}
+    return DEFAULT_PILLS;
+  }
+  function savePills(list) {
+    try { localStorage.setItem(PILLS_LS_KEY, JSON.stringify(list)); } catch {}
+  }
+
+  // Активен ли препарат в конкретный день — ЕДИНАЯ логика фильтра.
+  function isPillActiveOn(pill, date, packAnchor) {
+    const d = new Date(date); d.setHours(0, 0, 0, 0);
+    const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;
+    if (pill.startDate && d < mkd(pill.startDate)) return false;
+    if (pill.weekdays && !pill.weekdays.includes(dow)) return false;
+    if (pill.ironRule && !isIronDay(d)) return false;
+    if (pill.yarinaPack && packAnchor && !isYarinaActiveToday(d, packAnchor)) return false;
+    return true;
+  }
+
+  // Список активных препаратов на дату, отсортированный по времени.
+  function activePillsOn(date, packAnchor, pills) {
+    const list = pills || loadPills();
+    return list
+      .filter(p => isPillActiveOn(p, date, packAnchor))
+      .sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+  }
+
+  // ===========================================================================
+  // КОМПОНЕНТ: лиса-картинка (использует PNG из папки assets)
+  // ===========================================================================
+  function FoxImage({ kind, size = 64, opacity = 1, style = {} }) {
+    const src = {
+      main: "./fox-main.png",
+      path: "./fox-path.jpg",
+      grass: "./decor-grass.png",
+      mushrooms: "./decor-mushrooms.png",
+      tracks: "./decor-tracks.png",
+    }[kind];
+    if (!src) return null;
+    return React.createElement("img", {
+      src, alt: "",
+      style: { width: size, height: "auto", opacity, display: "block", ...style }
+    });
+  }
+
+  // Иконка навигации с лисой. maxHeight ограничивает все иконки одной высотой,
+  // т.к. PNG разные по высоте (лиса спит, бежит, сидит) — без этого текст под ними сместится.
+  function FoxNavIcon({ kind, size = 28, active }) {
+    const src = `./nav-${kind}.png`;
+    return React.createElement("img", {
+      src, alt: kind,
+      style: {
+        maxWidth: size, maxHeight: size, width: "auto", height: "auto", display: "block",
+        opacity: active ? 1 : 0.42,
+        filter: active ? "none" : "grayscale(40%)",
+        transition: "opacity .15s"
+      }
+    });
+  }
+
+  // ===========================================================================
+  // IronWindow — карточка "запретное окно" для железа.
+  // Показывает можно ли сейчас кофе/зелёный чай/молочное.
+  // Окно запрета: 09:30 — 13:30 в дни приёма железа.
+  // ===========================================================================
+  function IronWindow() {
+    const now = new Date();
+    const todayDate = new Date(now); todayDate.setHours(0, 0, 0, 0);
+
+    // Если железо ещё не введено — карточка не показывается
+    if (todayDate < KEY_DATES.ironStart) return null;
+
+    const ironToday = isIronDay(todayDate);
+    if (!ironToday) {
+      // День без железа — пьём что хотим
+      return React.createElement("div", {
+        style: { background: C.sandSoft, border: `0.5px solid ${C.sand}33`, borderRadius: 10, padding: "10px 13px", marginBottom: 10 }
+      },
+        React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+          React.createElement("div", { style: { fontSize: 18 } }, "☕"),
+          React.createElement("div", { style: { flex: 1 } },
+            React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.sandDeep } }, "Сегодня без железа"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } }, "Зелёный чай и молочное — без ограничений весь день")
+          )
+        )
+      );
+    }
+
+    // День с железом — считаем где сейчас в окне
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const curMins = hour * 60 + minute;
+    const banStart = 7 * 60 + 45;  // 07:45 — до приёма железа
+    const ironTime = 8 * 60 + 15;  // 08:15 — приём железа натощак
+    const banEnd = 9 * 60 + 30;    // 09:30 — завтрак (≈1.25 ч после железа)
+
+    const fmt = (mins) => {
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    };
+
+    let state, color, bg, border, title, hint;
+    if (curMins < banStart) {
+      // До начала окна
+      const left = banStart - curMins;
+      state = "before";
+      color = C.ok; bg = C.sandSoft; border = `${C.sand}33`;
+      title = `☕ Чай / молочное можно`;
+      const leftH = Math.floor(left / 60), leftM = left % 60;
+      hint = `Запретное окно начнётся в ${fmt(banStart)} (через ${leftH > 0 ? leftH + 'ч ' : ''}${leftM} мин). Успей последнюю чашку!`;
+    } else if (curMins < banEnd) {
+      // В запретном окне
+      const left = banEnd - curMins;
+      state = "ban";
+      color = C.warn; bg = C.warnSoft; border = `${C.warn}55`;
+      const isIronTime = Math.abs(curMins - ironTime) < 30;
+      title = isIronTime ? `💊 Сейчас — железо!` : `🚫 Запретное окно (до ${fmt(banEnd)})`;
+      const leftH = Math.floor(left / 60), leftM = left % 60;
+      hint = `Нельзя кофе / зелёный чай / молочное. До конца окна: ${leftH > 0 ? leftH + 'ч ' : ''}${leftM} мин. Только вода.`;
+    } else {
+      // После окна
+      state = "after";
+      color = C.ok; bg = C.sandSoft; border = `${C.sand}33`;
+      title = `☕ Окно закрыто — снова можно`;
+      hint = `Запретное окно прошло. Зелёный чай и молочное — без ограничений до завтра.`;
+    }
+
+    return React.createElement("div", {
+      style: { background: bg, border: `0.5px solid ${border}`, borderRadius: 10, padding: "10px 13px", marginBottom: 10 }
+    },
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color, marginBottom: 3 } }, title),
+      React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, hint)
+    );
+  }
+
+  // ===========================================================================
+  // ProteinTracker — трекер белка с быстрыми кнопками.
+  // Цель: 90 г/день. Кнопки: +30 (полная еда), +25 (протеин), +20, +15.
+  // ===========================================================================
+  function ProteinTracker() {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const [proteinLog, setProteinLog] = useLS("proteinLogV1", {});
+    const [goal] = useLS("proteinGoal", 90);
+    const [showCustom, setShowCustom] = useState(false);
+    const [custom, setCustom] = useState("");
+
+    const todayG = proteinLog[todayKey] || 0;
+    const pct = Math.min(100, Math.round(todayG / goal * 100));
+    const left = Math.max(0, goal - todayG);
+
+    const add = (g) => {
+      const newVal = Math.max(0, todayG + g);
+      setProteinLog({ ...proteinLog, [todayKey]: newVal });
+    };
+    const addCustom = () => {
+      const n = parseInt(custom, 10);
+      if (!isNaN(n) && n !== 0) add(n); // принимаем и отрицательные
+      setCustom(""); setShowCustom(false);
+    };
+    const reset = () => {
+      const upd = { ...proteinLog };
+      delete upd[todayKey];
+      setProteinLog(upd);
+    };
+
+    const color = pct >= 100 ? C.ok : pct >= 60 ? C.olive : C.warn;
+
+    return React.createElement("div", {
+      style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10 }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "🥩 Белок сегодня"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, todayG, " г / ", goal, " г · осталось ", left, " г")
+        ),
+        React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color } }, pct, "%")
+      ),
+      // Прогресс-бар
+      React.createElement("div", { style: { height: 6, background: C.bgWarm, borderRadius: 3, overflow: "hidden", marginBottom: 10 } },
+        React.createElement("div", { style: { height: "100%", width: pct + "%", background: color, transition: "width .3s" } })
+      ),
+      // Быстрые кнопки
+      React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 5, marginBottom: 6 } },
+        [
+          { v: 15, l: "+15 г", sub: "йогурт" },
+          { v: 20, l: "+20 г", sub: "яйца" },
+          { v: 25, l: "+25 г", sub: "коктейль" },
+          { v: 30, l: "+30 г", sub: "мясо/рыба" },
+        ].map(b => React.createElement("button", {
+          key: b.v, onClick: () => add(b.v),
+          style: { padding: "7px 4px", borderRadius: 7, background: C.oliveSoft, border: `0.5px solid ${C.olive}33`,
+            color: C.oliveDeep, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.2 }
+        },
+          React.createElement("div", null, b.l),
+          React.createElement("div", { style: { fontSize: 9, color: C.textM, marginTop: 1 } }, b.sub)
+        ))
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 5 } },
+        showCustom
+          ? React.createElement(React.Fragment, null,
+              React.createElement("input", { type: "number", value: custom, onChange: e => setCustom(e.target.value),
+                placeholder: "+10 или -5", min: "-200", max: "200",
+                style: { flex: 1, padding: "7px 10px", borderRadius: 7, border: `0.5px solid ${C.border}`,
+                  fontSize: 13, fontFamily: "inherit", outline: "none", background: C.bg, color: C.text, boxSizing: "border-box" }
+              }),
+              React.createElement("button", { onClick: addCustom,
+                style: { padding: "7px 12px", borderRadius: 7, background: C.olive, border: "none", color: "#fff",
+                  fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+              }, "Добавить"),
+              React.createElement("button", { onClick: () => { setShowCustom(false); setCustom(""); },
+                style: { padding: "7px 10px", borderRadius: 7, background: C.bgWarm, border: "none", color: C.textM,
+                  fontSize: 12, cursor: "pointer", fontFamily: "inherit" }
+              }, "✕")
+            )
+          : React.createElement(React.Fragment, null,
+              React.createElement("button", { onClick: () => setShowCustom(true),
+                style: { flex: 1, padding: "7px", borderRadius: 7, background: "none", border: `0.5px dashed ${C.border}`,
+                  color: C.textM, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }
+              }, "+ другое количество"),
+              todayG > 0 && React.createElement("button", { onClick: reset,
+                style: { padding: "7px 11px", borderRadius: 7, background: "none", border: `0.5px solid ${C.border}`,
+                  color: C.textL, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }
+              }, "↺")
+            )
+      )
+    );
+  }
+
+  // ===========================================================================
+  // StepsTracker — ручной ввод шагов за день (опциональный)
+  // ===========================================================================
+  function StepsTracker() {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const [stepsLog, setStepsLog] = useLS("stepsLogV1", {});
+    const [editing, setEditing] = useState(false);
+    const [val, setVal] = useState("");
+
+    const todaySteps = stepsLog[todayKey] || 0;
+
+    const save = () => {
+      const n = parseInt(val, 10);
+      if (!isNaN(n) && n >= 0) {
+        setStepsLog({ ...stepsLog, [todayKey]: n });
+      }
+      setEditing(false); setVal("");
+    };
+
+    if (!editing && todaySteps === 0) {
+      return React.createElement("button", {
+        onClick: () => setEditing(true),
+        style: { background: C.card, border: `0.5px dashed ${C.border}`, borderRadius: 10, padding: "10px 13px",
+          width: "100%", cursor: "pointer", fontFamily: "inherit", textAlign: "left", marginBottom: 10 }
+      },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.textM } }, "👣 Шаги сегодня"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 2 } }, "Нажми чтобы записать")
+          ),
+          React.createElement("div", { style: { fontSize: 16, color: C.textL } }, "+")
+        )
+      );
+    }
+
+    if (editing) {
+      return React.createElement("div", {
+        style: { background: C.card, border: `0.5px solid ${C.olive}`, borderRadius: 10, padding: "11px 13px", marginBottom: 10 }
+      },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 6 } }, "👣 Шаги сегодня"),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          React.createElement("input", { type: "number", value: val, onChange: e => setVal(e.target.value),
+            placeholder: todaySteps > 0 ? String(todaySteps) : "5000", min: "0", max: "100000", autoFocus: true,
+            style: { flex: 1, padding: "9px 11px", borderRadius: 7, border: `0.5px solid ${C.border}`,
+              fontSize: 14, fontFamily: "inherit", outline: "none", background: C.bg, color: C.text, boxSizing: "border-box" }
+          }),
+          React.createElement("button", { onClick: save,
+            style: { padding: "9px 14px", borderRadius: 7, background: C.olive, border: "none", color: "#fff",
+              fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+          }, "OK"),
+          React.createElement("button", { onClick: () => { setEditing(false); setVal(""); },
+            style: { padding: "9px 11px", borderRadius: 7, background: C.bgWarm, border: "none", color: C.textM,
+              fontSize: 12, cursor: "pointer", fontFamily: "inherit" }
+          }, "✕")
+        )
+      );
+    }
+
+    // todaySteps > 0
+    return React.createElement("div", {
+      onClick: () => { setEditing(true); setVal(String(todaySteps)); },
+      style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "10px 13px",
+        cursor: "pointer", marginBottom: 10 }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, "👣 Шаги сегодня"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "Нажми чтобы изменить")
+        ),
+        React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: C.olive } }, todaySteps.toLocaleString("ru-RU"))
+      )
+    );
+  }
+
+  // ===========================================================================
+  // DayScheduleCard — компактный таймлайн режима дня
+  // Показывает: что сейчас, следующие 3 действия. По клику открывает полный режим.
+  // ===========================================================================
+  function DayScheduleCard({ cycleAnchor, periodOverrides, workoutDays, packAnchor, onOpen }) {
+    const now = new Date();
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const curMins = now.getHours() * 60 + now.getMinutes();
+    const dow = today.getDay() === 0 ? 6 : today.getDay() - 1;
+    const isTrainingDay = today >= KEY_DATES.gymStart && workoutDays.includes(dow);
+
+    // Лайфстайл-каркас (еда/сон/зал) + препараты из ЕДИНОГО источника.
+    const items = [];
+    items.push({ time: "08:00", label: "Подъём, стакан воды", icon: "☀️", kind: "wake" });
+    items.push({ time: "09:30", label: "Завтрак", icon: "🍳", kind: "meal" });
+    items.push({ time: "14:00", label: "Обед (с жирами)", icon: "🥗", kind: "meal" });
+
+    if (isTrainingDay) {
+      items.push({ time: "17:30", label: "Лёгкий перекус (банан/йогурт)", icon: "🍌", kind: "meal" });
+      items.push({ time: "18:00", label: "Разминка 10 мин", icon: "🏋", kind: "gym" });
+      items.push({ time: "18:10", label: "Силовая 40 мин", icon: "🏋", kind: "gym" });
+      if (today >= KEY_DATES.pelvicStart && today <= KEY_DATES.pelvicEnd) {
+        items.push({ time: "18:50", label: "Курс таз. дна 30 мин (в зале)", icon: "🌸", kind: "pelvic" });
+      }
+      items.push({ time: "19:15", label: "Поздний ужин", icon: "🍽", kind: "meal" });
+    } else {
+      if (today >= KEY_DATES.pelvicStart && today <= KEY_DATES.pelvicEnd && dow !== 6) {
+        items.push({ time: "18:00", label: "Курс таз. дна 30 мин", icon: "🌸", kind: "pelvic" });
+      }
+      items.push({ time: "19:00", label: "Ужин", icon: "🍽", kind: "meal" });
+    }
+    if (!isTrainingDay) {
+      const dogHere = today < KEY_DATES.dogLeaveDate;
+      items.push({ time: "20:30", label: `Прогулка ${dogHere ? "с собакой" : "одной"} 30-40 мин`, icon: dogHere ? "🐕" : "🚶", kind: "walk" });
+    }
+    items.push({ time: "22:00", label: "Готовлюсь ко сну", icon: "🌙", kind: "sleep" });
+    items.push({ time: "23:00", label: "Сплю", icon: "😴", kind: "sleep" });
+
+    // Препараты — из единого источника (тот же список, что и в трекере таблеток)
+    activePillsOn(today, packAnchor).forEach(p => {
+      items.push({ time: p.time || "12:00", label: p.name, icon: "💊", kind: p.id === "iron" ? "pill_iron" : "pill" });
+    });
+
+    // Помечаем "прошло" и "сейчас"
+    const enriched = items.map(it => {
+      const [h, m] = it.time.split(":").map(Number);
+      const mins = h * 60 + m;
+      return { ...it, mins };
+    }).sort((a, b) => a.mins - b.mins);
+
+    // Найдём "следующее" — ближайшее в будущем
+    const upcoming = enriched.filter(it => it.mins >= curMins);
+    const past = enriched.filter(it => it.mins < curMins);
+    const next3 = upcoming.slice(0, 3);
+    const lastPast = past.slice(-1);
+
+    return React.createElement("div", {
+      style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "12px 14px",
+        marginBottom: 10, cursor: "pointer" },
+      onClick: onOpen
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "📋 Режим дня"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL } }, "полный →")
+      ),
+      lastPast.length > 0 && React.createElement("div", {
+        style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", opacity: 0.45 }
+      },
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, width: 42, fontVariantNumeric: "tabular-nums" } }, lastPast[0].time),
+        React.createElement("div", { style: { fontSize: 14 } }, lastPast[0].icon),
+        React.createElement("div", { style: { fontSize: 12, color: C.textM, flex: 1, textDecoration: "line-through" } }, lastPast[0].label)
+      ),
+      // Если есть upcoming — показываем 3 ближайших.
+      // Если ничего не осталось — плашка "всё на сегодня".
+      next3.length > 0
+        ? next3.map((it, i) => React.createElement("div", { key: i,
+            style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
+              fontWeight: i === 0 ? 600 : 400 }
+          },
+            React.createElement("div", { style: { fontSize: 11, color: i === 0 ? C.olive : C.textM, width: 42, fontVariantNumeric: "tabular-nums", fontWeight: i === 0 ? 600 : 400 } }, it.time),
+            React.createElement("div", { style: { fontSize: 14 } }, it.icon),
+            React.createElement("div", { style: { fontSize: 12, color: i === 0 ? C.text : C.textM, flex: 1, fontWeight: i === 0 ? 600 : 400 } }, it.label),
+            i === 0 && React.createElement("div", { style: { fontSize: 10, color: C.olive, fontWeight: 600 } }, "СЛЕД.")
+          ))
+        : React.createElement("div", {
+            style: { padding: "10px 0", textAlign: "center" }
+          },
+            React.createElement("div", { style: { fontSize: 13, color: C.ok, fontWeight: 600 } }, "✓ Всё на сегодня"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 3 } }, "Хорошего сна! Завтра подъём в 08:00")
+          )
+    );
+  }
+
+  // ===========================================================================
+  // FullScheduleModal — полный режим дня (модалка)
+  // ===========================================================================
+  function FullScheduleModal({ onClose, workoutDays, cycleAnchor, packAnchor, periodOverrides }) {
+    const now = new Date();
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const curMins = now.getHours() * 60 + now.getMinutes();
+    const dow = today.getDay() === 0 ? 6 : today.getDay() - 1;
+    const isTrainingDay = today >= KEY_DATES.gymStart && workoutDays.includes(dow);
+
+    const items = [];
+    items.push({ time: "08:00", label: "Подъём", note: "Свет, стакан тёплой воды натощак" });
+    items.push({ time: "09:30", label: "Завтрак 🍳", note: "Белок 20-25 г" });
+    items.push({ time: "14:00", label: "Обед 🍽", note: "Полноценная еда с жирами, белок 30-35 г" });
+
+    if (isTrainingDay) {
+      items.push({ time: "17:30", label: "Лёгкий перекус 🍌", note: "Банан / йогурт / орехи — перед залом" });
+      items.push({ time: "18:00", label: "Разминка 10 мин 🏋", note: "Лёгкое кардио, мобилизация суставов" });
+      items.push({ time: "18:10", label: "Силовая 40 мин 🏋", note: "Минимальные веса, выдох на усилии" });
+      if (today >= KEY_DATES.pelvicStart && today <= KEY_DATES.pelvicEnd) {
+        items.push({ time: "18:50", label: "Курс таз. дна 30 мин 🌸", note: "Сразу после силовой, в зале" });
+      }
+      items.push({ time: "19:15", label: "Поздний ужин 🍽", note: "Белок 25-30 г + овощи" });
+    } else {
+      if (today >= KEY_DATES.pelvicStart && today <= KEY_DATES.pelvicEnd && dow !== 6) {
+        items.push({ time: "18:00", label: "Курс таз. дна 30 мин 🌸", note: "6 раз в неделю, отдых в воскресенье" });
+      }
+      items.push({ time: "19:00", label: "Ужин 🍽", note: "Белок 25-30 г + овощи" });
+    }
+    if (!isTrainingDay) {
+      const dogHere = today < KEY_DATES.dogLeaveDate;
+      items.push({ time: "20:30", label: `Прогулка ${dogHere ? "с собакой" : "одной"}`, note: "30-40 мин спокойного темпа" });
+    }
+    items.push({ time: "22:00", label: "Готовлюсь ко сну 🌙", note: "Душ, свет приглушённый. Мелатонин — по необходимости" });
+    items.push({ time: "23:00", label: "Сплю 😴", note: "До 8:00 = 9 часов сна" });
+
+    // Препараты — из единого источника (краткая заметка = первая фраза note)
+    activePillsOn(today, packAnchor).forEach(p => {
+      const shortNote = (p.note || "").split(/[.!]/)[0];
+      items.push({ time: p.time || "12:00", label: p.name + " 💊", note: shortNote });
+    });
+
+    const enriched = items.map(it => {
+      const [h, m] = it.time.split(":").map(Number);
+      return { ...it, mins: h * 60 + m };
+    }).sort((a, b) => a.mins - b.mins);
+
+    return React.createElement("div", {
+      onClick: onClose,
+      style: { position: "fixed", inset: 0, background: "rgba(46,36,24,0.55)", zIndex: 300,
+        display: "flex", alignItems: "flex-end", justifyContent: "center" }
+    },
+      React.createElement("div", {
+        onClick: e => e.stopPropagation(),
+        style: { background: C.bg, borderRadius: "16px 16px 0 0", padding: "16px 14px 20px",
+          width: "100%", maxWidth: 430, maxHeight: "85vh", overflowY: "auto" }
+      },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 16, fontWeight: 600, color: C.text } }, "Режим дня"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, isTrainingDay ? "Тренировочный день" : "Обычный день")
+          ),
+          React.createElement("button", { onClick: onClose,
+            style: { background: "none", border: "none", fontSize: 22, color: C.textL, cursor: "pointer", padding: 4, fontFamily: "inherit" }
+          }, "✕")
+        ),
+        enriched.map((it, i) => {
+          const past = it.mins < curMins;
+          return React.createElement("div", { key: i,
+            style: { display: "flex", gap: 10, padding: "10px 0",
+              borderBottom: i < enriched.length - 1 ? `0.5px solid ${C.border}` : "none",
+              opacity: past ? 0.45 : 1 }
+          },
+            React.createElement("div", { style: { fontSize: 12, color: past ? C.textL : C.olive, fontWeight: 600,
+              width: 50, fontVariantNumeric: "tabular-nums", flexShrink: 0, paddingTop: 1 } }, it.time),
+            React.createElement("div", { style: { flex: 1 } },
+              React.createElement("div", { style: { fontSize: 13, fontWeight: 500, color: past ? C.textM : C.text,
+                textDecoration: past ? "line-through" : "none" } }, it.label),
+              it.note && React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 2, lineHeight: 1.4 } }, it.note)
+            )
+          );
+        })
+      )
+    );
+  }
+
+  // ===========================================================================
+  // getTodayActivity — определяет какое движение приложение показывает сегодня.
+  // Учитывает: старт зала (10 июня — ср), бег с 15 июня, 1-3 день месячных
+  // (заменяем на прогулку), отъезд собаки (с 27 мая → прогулка одной), bad-day режим.
+  //
+  // Возвращает: { kind, label, hint, icon }
+  // kind:  "before_plan" | "walk_dog" | "walk_alone" | "walk_long" | "walk_period"
+  //        "gym_a" | "gym_b" | "gym_c" | "run" | "rest"
+  // ===========================================================================
+  function getTodayActivity({ date, cycleAnchor, periodOverrides, workoutDays, badDay }) {
+    const today = new Date(date);
+    today.setHours(0, 0, 0, 0);
+    const dow = today.getDay() === 0 ? 6 : today.getDay() - 1; // 0=Пн..6=Вс
+
+    // ДО старта плана (до 25 мая) — особое состояние
+    if (today < KEY_DATES.planStart) {
+      const daysLeft = Math.ceil((KEY_DATES.planStart - today) / 86400000);
+      return {
+        kind: "before_plan",
+        label: daysLeft === 1 ? "Завтра — старт плана!" : `До старта плана ${daysLeft} дн.`,
+        hint: "Приём по плану начинается 30 мая. Сейчас — привычный режим (Ярина и Дуксет как обычно).",
+        icon: "🌱"
+      };
+    }
+
+    // Прогулка с собакой / одна — зависит от dogLeaveDate
+    const dogHere = today < KEY_DATES.dogLeaveDate;
+    const walkWith = dogHere ? "с собакой" : "одной";
+
+    // Bad-day режим всегда даёт прогулку
+    if (badDay) {
+      return {
+        kind: "walk_alone",
+        label: `Прогулка ${walkWith}`,
+        hint: "Сегодня плохо себя чувствуешь — лёгкий день. Только мягкое движение, никаких силовых.",
+        icon: "💛"
+      };
+    }
+
+    // 1-3 день месячных → заменяем интенсивное на прогулку
+    const periodDay = getPeriodDay(today, cycleAnchor, periodOverrides);
+    if (periodDay >= 1 && periodDay <= 3) {
+      return {
+        kind: "walk_period",
+        label: `Прогулка ${walkWith}`,
+        hint: `День ${periodDay} месячных — без интенсивности. Курс таз. дна делаешь, он даже помогает при ПМС.`,
+        icon: "🌸"
+      };
+    }
+
+    // С 10 июня — силовые в дни workoutDays (по умолчанию ср + пт)
+    const gymOpen = today >= KEY_DATES.gymStart;
+    const isWorkoutDay = gymOpen && workoutDays.includes(dow);
+
+    if (isWorkoutDay) {
+      // Считаем сколько тренировочных дней прошло от gymStart до сегодня
+      // (НЕ включая сегодня) — это и есть номер сегодняшней тренировки от старта.
+      // Если месячные/badDay пропускали — те дни всё равно засчитываем как "должны были быть".
+      // Это компромисс: точный счётчик требовал бы юзера отмечать каждую тренировку.
+      let trainingCount = 0;
+      const d0 = new Date(KEY_DATES.gymStart);
+      const d1 = new Date(today);
+      d1.setHours(0, 0, 0, 0);
+      for (let d = new Date(d0); d < d1; d.setDate(d.getDate() + 1)) {
+        const dw = d.getDay() === 0 ? 6 : d.getDay() - 1;
+        if (workoutDays.includes(dw)) {
+          // Пропускаем только дни 1-3 месячных (там был walk_period, не тренировка)
+          const pd = getPeriodDay(d, cycleAnchor, periodOverrides);
+          if (pd < 1 || pd > 3) trainingCount++;
+        }
+      }
+      // День C доступен только с 6 июля
+      const dayCAvailable = today >= KEY_DATES.dayCStart;
+      // Сколько типов тренировок в ротации (2 без C, 3 с C)
+      const types = dayCAvailable && workoutDays.length >= 3 ? 3 : 2;
+      const dayType = trainingCount % types;
+
+      if (dayType === 0) return {
+        kind: "gym_a",
+        label: "Зал — День A",
+        hint: trainingCount === 0
+          ? "ПЕРВАЯ ТРЕНИРОВКА — начни с минимальных весов (пустой гриф Смита, гантели 4 кг). Сегодня цель — освоить движения, а не нагрузить мышцы. Подобрать вес — на следующей."
+          : "10 мин разминка + 40 мин силовая (ягодицы+кор) + 30 мин таз. дна. Техника > вес.",
+        icon: "🍑"
+      };
+      if (dayType === 1) return {
+        kind: "gym_b",
+        label: "Зал — День B",
+        hint: trainingCount <= 1
+          ? "Спина и кор. Если это вторая тренировка — продолжай с минимальными весами. Без жима лёжа."
+          : "10 мин разминка + 40 мин силовая (спина+кор) + 30 мин таз. дна. Без жима лёжа.",
+        icon: "🦅"
+      };
+      if (dayType === 2) return {
+        kind: "gym_c",
+        label: "Зал — День C",
+        hint: "10 мин разминка + 40 мин силовая (ягодицы+ноги) + 30 мин таз. дна. ⚠ Если выпады ходячие сложны — начни со СТАТИЧНЫХ выпадов в Смите.",
+        icon: "🔥"
+      };
+    }
+
+    // Бег / ходьба с 15 июня — в субботу (если суббота не тренировочный день)
+    const runOpen = today >= KEY_DATES.runStart;
+    if (runOpen && dow === 5 && !workoutDays.includes(5)) {
+      return {
+        kind: "run",
+        label: "Ходьба / бег",
+        hint: "Начни с быстрой ходьбы или incline walking. Темп разговорный — должна мочь говорить.",
+        icon: "🏃"
+      };
+    }
+
+    // Воскресенье — отдых
+    if (dow === 6) {
+      return {
+        kind: "rest",
+        label: "День отдыха",
+        hint: "Восстановление. Прогулка — по желанию. Курс таз. дна — выходной.",
+        icon: "🌙"
+      };
+    }
+
+    // Суббота не-тренировочная (и до 15 июня) — длинная прогулка
+    if (dow === 5) {
+      return {
+        kind: "walk_long",
+        label: `Долгая прогулка ${walkWith}`,
+        hint: gymOpen ? "Активный отдых — 40-60 мин спокойного темпа." : "Зал стартует 10 июня (ср). Сегодня — длинная прогулка.",
+        icon: "🥾"
+      };
+    }
+
+    // Будний не-тренировочный день — прогулка вечером
+    return {
+      kind: "walk_dog",
+      label: `Прогулка ${walkWith} вечером`,
+      hint: gymOpen ? "Между тренировками — спокойное движение, 30-40 мин." :
+            today < KEY_DATES.pelvicStart ? "Зал и курс таз. дна — впереди. Сейчас режим и сон." :
+            today < KEY_DATES.gymStart ? "Зал стартует 10 июня. Сейчас — курс таз. дна и прогулка." :
+            "Между тренировками — спокойное движение.",
+      icon: "🐕"
+    };
+  }
+
+  // ===========================================================================
+  // MoodDiary — дневник состояния (раз в день).
+  // Сохраняет: настроение (1-5), энергию (1-5), ЖКТ (категория), сон-часы и качество.
+  // Данные используются для графиков в TrendsTab.
+  // ===========================================================================
+  function MoodDiary({ onClose }) {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const [log, setLog] = useLS("moodDiaryV1", {});
+    const existing = log[todayKey] || { mood: 0, energy: 0, gut: "", sleepH: 0, sleepQ: 0, note: "" };
+    const [mood, setMood] = useState(existing.mood);
+    const [energy, setEnergy] = useState(existing.energy);
+    const [gut, setGut] = useState(existing.gut);
+    const [sleepH, setSleepH] = useState(existing.sleepH);
+    const [sleepQ, setSleepQ] = useState(existing.sleepQ);
+    const [note, setNote] = useState(existing.note);
+
+    const moodEmojis = ["😞", "😐", "🙂", "😊", "😄"];
+    const energyLabels = ["нет сил", "мало", "ок", "хорошо", "много"];
+    const gutOptions = [
+      { v: "soft", l: "мягкий", color: C.ok },
+      { v: "norm", l: "норма", color: C.ok },
+      { v: "hard", l: "твёрдый", color: C.olive },
+      { v: "blood", l: "кровь", color: C.warn },
+      { v: "skip", l: "не было", color: C.textL },
+    ];
+    const sleepHours = [5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9];
+
+    const save = () => {
+      setLog({ ...log, [todayKey]: { mood, energy, gut, sleepH, sleepQ, note, savedAt: new Date().toISOString() } });
+      onClose && onClose();
+    };
+
+    const Section = ({ title, children }) => React.createElement("div", { style: { marginBottom: 16 } },
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.textM, marginBottom: 8, letterSpacing: 0.3 } }, title),
+      children
+    );
+
+    return React.createElement("div", { style: { background: C.card, borderRadius: 14, padding: "16px", border: `0.5px solid ${C.border}` } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: C.text } }, "Как ты сегодня?"),
+        onClose && React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", fontSize: 18, color: C.textL, cursor: "pointer", padding: 4, fontFamily: "inherit" } }, "✕")
+      ),
+
+      Section({ title: "Настроение", children: React.createElement("div", { style: { display: "flex", gap: 6, justifyContent: "space-between" } },
+        moodEmojis.map((emoji, i) => React.createElement("button", {
+          key: i, onClick: () => setMood(i + 1),
+          style: { flex: 1, padding: "10px 0", borderRadius: 10, border: `0.5px solid ${mood === i + 1 ? C.olive : C.border}`,
+            background: mood === i + 1 ? C.oliveSoft : C.card, fontSize: 22, cursor: "pointer", fontFamily: "inherit" }
+        }, emoji))
+      )}),
+
+      Section({ title: "Энергия", children: React.createElement("div", { style: { display: "flex", gap: 4, justifyContent: "space-between" } },
+        [1, 2, 3, 4, 5].map(n => React.createElement("button", {
+          key: n, onClick: () => setEnergy(n),
+          style: { flex: 1, padding: "8px 0", borderRadius: 8, border: `0.5px solid ${energy === n ? C.olive : C.border}`,
+            background: energy === n ? C.oliveSoft : C.card, cursor: "pointer", fontFamily: "inherit",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }
+        },
+          React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: energy === n ? C.oliveDeep : C.text } }, n),
+          React.createElement("div", { style: { fontSize: 9, color: C.textL } }, energyLabels[n - 1])
+        ))
+      )}),
+
+      Section({ title: "ЖКТ сегодня", children: React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 } },
+        gutOptions.map(o => React.createElement("button", {
+          key: o.v, onClick: () => setGut(o.v),
+          style: { padding: "9px", borderRadius: 8, border: `0.5px solid ${gut === o.v ? o.color : C.border}`,
+            background: gut === o.v ? o.color + "22" : C.card, fontSize: 12, fontWeight: 500, color: gut === o.v ? o.color : C.text,
+            cursor: "pointer", fontFamily: "inherit" }
+        }, o.l))
+      )}),
+
+      Section({ title: "Сон сегодня ночью", children: React.createElement("div", null,
+        React.createElement("div", { style: { display: "flex", gap: 3, flexWrap: "wrap", marginBottom: 8 } },
+          sleepHours.map(h => React.createElement("button", {
+            key: h, onClick: () => setSleepH(h),
+            style: { padding: "6px 10px", borderRadius: 7, border: `0.5px solid ${sleepH === h ? C.olive : C.border}`,
+              background: sleepH === h ? C.oliveSoft : C.card, fontSize: 12, color: sleepH === h ? C.oliveDeep : C.text,
+              fontWeight: sleepH === h ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }
+          }, h, "ч"))
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginBottom: 6 } }, "Качество:"),
+        React.createElement("div", { style: { display: "flex", gap: 4 } },
+          ["плохо", "так себе", "ок", "хорошо", "отлично"].map((l, i) => React.createElement("button", {
+            key: i, onClick: () => setSleepQ(i + 1),
+            style: { flex: 1, padding: "7px 0", borderRadius: 7, border: `0.5px solid ${sleepQ === i + 1 ? C.olive : C.border}`,
+              background: sleepQ === i + 1 ? C.oliveSoft : C.card, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+              color: sleepQ === i + 1 ? C.oliveDeep : C.textM }
+          }, l))
+        )
+      )}),
+
+      Section({ title: "Заметка (по желанию)", children: React.createElement("textarea", {
+        value: note, onChange: e => setNote(e.target.value),
+        placeholder: "Что-то заметила за день?",
+        style: { width: "100%", padding: "10px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit",
+          color: C.text, resize: "vertical", minHeight: 60, boxSizing: "border-box", outline: "none", background: C.bg }
+      })}),
+
+      React.createElement("button", { onClick: save,
+        disabled: mood === 0,
+        style: { width: "100%", padding: "12px", borderRadius: 10, background: mood > 0 ? C.olive : C.border, border: "none",
+          color: mood > 0 ? "#fff" : C.textL, fontSize: 14, fontWeight: 600, cursor: mood > 0 ? "pointer" : "default", fontFamily: "inherit" }
+      }, "Сохранить")
+    );
+  }
+  function useCountdown(secs) {
+    const [left, setLeft] = useState(secs);
+    const [on, setOn] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => {
+      if (on && left > 0) ref.current = setTimeout(() => setLeft((l) => l - 1), 1e3);
+      else if (left === 0) setOn(false);
+      return () => clearTimeout(ref.current);
+    }, [on, left]);
+    return { left, on, toggle: () => {
+      if (left === 0) {
+        setLeft(secs);
+        setOn(false);
+      } else setOn((o) => !o);
+    }, reset: () => {
+      setLeft(secs);
+      setOn(false);
+    } };
+  }
+  function Ring({ pct, size = 44, stroke = 4, color = C.olive }) {
+    const r = (size - stroke) / 2, circ = 2 * Math.PI * r, off = circ - pct / 100 * circ;
+    return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, style: { transform: "rotate(-90deg)" } }, /* @__PURE__ */ React.createElement("circle", { cx: size / 2, cy: size / 2, r, fill: "none", stroke: C.border, strokeWidth: stroke }), /* @__PURE__ */ React.createElement(
+      "circle",
+      {
+        cx: size / 2,
+        cy: size / 2,
+        r,
+        fill: "none",
+        stroke: color,
+        strokeWidth: stroke,
+        strokeDasharray: circ,
+        strokeDashoffset: off,
+        strokeLinecap: "round",
+        style: { transition: "stroke-dashoffset .5s ease" }
+      }
+    ));
+  }
+  function SetTracker({ exId, dayId, clr }) {
+    const [sets, setSets] = useLS(`s_${dayId}_${exId}`, []);
+    const [hist, setHist] = useLS(`h_${dayId}_${exId}`, []);
+    const [reps, setReps] = useState("");
+    const [kg, setKg] = useState("");
+    const [showH, setShowH] = useState(false);
+    const { left, on, toggle, reset } = useCountdown(75);
+    const addSet = () => {
+      const r = parseInt(reps);
+      if (!r) return;
+      setSets([...sets, { r, kg: parseFloat(kg) || 0 }]);
+      setReps("");
+      reset();
+      setTimeout(toggle, 80);
+    };
+    const saveSession = () => {
+      if (!sets.length) return;
+      setHist((h) => [...h.slice(-29), { date: (/* @__PURE__ */ new Date()).toLocaleDateString("ru-RU"), sets }]);
+      setSets([]);
+    };
+    const m = Math.floor(left / 60), s = (left % 60).toString().padStart(2, "0");
+    const pct = (75 - left) / 75 * 100;
+    const chartData = hist.slice(-5).map((h) => ({ date: h.date, maxKg: Math.max(...h.sets.map((s2) => s2.kg || 0)) }));
+    return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, sets.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7 } }, sets.map((s2, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { background: clr + "18", border: `1px solid ${clr}44`, borderRadius: 7, padding: "3px 8px", display: "flex", gap: 4, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: C.textL } }, "#", i + 1), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.text } }, s2.r, "\xD7"), s2.kg > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: C.textM } }, s2.kg, "\u043A\u0433"), /* @__PURE__ */ React.createElement("button", { onClick: () => setSets(sets.filter((_, j) => j !== i)), style: { background: "none", border: "none", cursor: "pointer", color: C.textL, fontSize: 10, padding: 0 } }, "\u2715")))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        placeholder: "\u041F\u043E\u0432\u0442.",
+        value: reps,
+        onChange: (e) => setReps(e.target.value),
+        style: { flex: 1, padding: "8px 9px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 14, fontFamily: "inherit", color: C.text, outline: "none", boxSizing: "border-box", minWidth: 0 }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        placeholder: "\u041A\u0433",
+        value: kg,
+        onChange: (e) => setKg(e.target.value),
+        style: { flex: 1, padding: "8px 9px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 14, fontFamily: "inherit", color: C.text, outline: "none", boxSizing: "border-box", minWidth: 0 }
+      }
+    ), /* @__PURE__ */ React.createElement("button", { onClick: addSet, style: { padding: "8px 12px", borderRadius: 8, background: clr, border: "none", color: C.white, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 } }, "+ \u041F\u043E\u0434\u0445\u043E\u0434")), sets.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, padding: "8px 10px", background: C.bgWarm, borderRadius: 8, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "relative", flexShrink: 0 } }, /* @__PURE__ */ React.createElement(Ring, { pct, size: 38, stroke: 3, color: on ? clr : C.textL }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: C.text } }, left === 0 ? "\u2713" : `${m}:${s}`)), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontSize: 11, color: left < 15 && on ? C.warn : C.textM } }, left === 0 ? "\u0412\u0440\u0435\u043C\u044F \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0433\u043E \u043F\u043E\u0434\u0445\u043E\u0434\u0430!" : on ? "\u041E\u0442\u0434\u044B\u0445..." : "\u0422\u0430\u0439\u043C\u0435\u0440 \u043E\u0442\u0434\u044B\u0445\u0430"), /* @__PURE__ */ React.createElement("button", { onClick: toggle, style: { padding: "5px 9px", borderRadius: 6, background: "none", border: `1px solid ${C.border}`, cursor: "pointer", fontSize: 11, color: C.textM, fontFamily: "inherit" } }, left === 0 ? "\u21BA" : on ? "\u23F8" : "\u25B6")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginTop: 5 } }, sets.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: saveSession, style: { flex: 1, padding: "6px", borderRadius: 7, background: C.oliveSoft, border: `1px solid ${C.olive}44`, color: C.oliveDeep, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u2713"), hist.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowH(!showH), style: { flex: 1, padding: "6px", borderRadius: 7, background: C.sageSoft, border: `1px solid ${C.sage}44`, color: C.sage, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "📈 \u0418\u0441\u0442\u043E\u0440\u0438\u044F (", hist.length, ")")), showH && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, background: C.card, borderRadius: 8, border: `1px solid ${C.border}`, padding: 10 } }, chartData.length > 1 && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL, marginBottom: 4 } }, "\u041C\u0430\u043A\u0441. \u0432\u0435\u0441 \u2014 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 \u0441\u0435\u0441\u0441\u0438\u0438"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 4, height: 40 } }, chartData.map((d, i) => {
+      const maxV = Math.max(...chartData.map((x) => x.maxKg), 1);
+      const h = d.maxKg > 0 ? Math.max(6, d.maxKg / maxV * 36) : 4;
+      return /* @__PURE__ */ React.createElement("div", { key: i, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 8, color: C.olive, fontWeight: 700 } }, d.maxKg > 0 ? d.maxKg : ""), /* @__PURE__ */ React.createElement("div", { style: { width: "100%", height: h, background: i === chartData.length - 1 ? C.olive : C.oliveSoft, borderRadius: 3 } }));
+    }))), /* @__PURE__ */ React.createElement("div", { style: { maxHeight: 120, overflowY: "auto" } }, hist.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { marginBottom: 6, paddingBottom: 6, borderBottom: i < hist.length - 1 ? `1px solid ${C.border}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL, marginBottom: 2 } }, h.date), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, overflowX: "auto", paddingBottom: 2 } }, h.sets.map((s2, j) => /* @__PURE__ */ React.createElement("span", { key: j, style: { fontSize: 10, color: C.text, background: C.bgWarm, borderRadius: 4, padding: "1px 5px" } }, s2.r, "\xD7 ", s2.kg > 0 ? `${s2.kg}\u043A\u0433` : ""))))))));
+  }
+  function ExCard({ ex, dayId, clr }) {
+    const [done, setDone] = useLS(`d_${dayId}_${ex.id}`, false);
+    const [open, setOpen] = useState(false);
+    const safe = ex.scol === "\u2713";
+    return /* @__PURE__ */ React.createElement("div", { style: { background: done ? C.oliveSoft : C.card, border: `1.5px solid ${done ? C.olive + "66" : C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 7, boxShadow: C.shadow } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", { style: { width: 36, height: 36, borderRadius: 9, background: done ? C.olive + "44" : clr + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 } }, done ? "\u2713" : ex.emoji || "\u25CB"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 6, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: done ? C.textM : C.text, textDecoration: done ? "line-through" : "none", lineHeight: 1.3 } }, ex.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 1 } }, ex.muscle)), /* @__PURE__ */ React.createElement("button", { onClick: () => setDone(!done), style: { width: 26, height: 26, borderRadius: 7, border: `2px solid ${done ? C.olive : C.borderM}`, background: done ? C.olive : "transparent", color: done ? C.white : C.textL, cursor: "pointer", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, done ? "\u2713" : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap" } }, [{ l: "\u041F\u043E\u0434\u0445\u043E\u0434\u043E\u0432", v: String(ex.sets) }, { l: "\u041F\u043E\u0432\u0442.", v: ex.repsT }, { l: "\u0412\u0435\u0441", v: ex.wt }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { background: C.bgWarm, borderRadius: 6, padding: "3px 8px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, it.l), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: clr } }, it.v)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7, display: "flex", gap: 5, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "3px 8px", background: safe ? C.oliveSoft : C.warnSoft, borderRadius: 6, fontSize: 10, color: safe ? C.oliveDeep : C.warn } }, "🦴 ", ex.scolNote), /* @__PURE__ */ React.createElement("div", { style: { padding: "3px 8px", background: C.oliveSoft, borderRadius: 6, fontSize: 10, color: C.oliveDeep } }, "\u2713 ", ex.feel.good), /* @__PURE__ */ React.createElement("div", { style: { padding: "3px 8px", background: C.warnSoft, borderRadius: 6, fontSize: 10, color: C.warn } }, "\u2717 ", ex.feel.bad)), ex.beginner && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, padding: "5px 9px", background: C.sandSoft, borderRadius: 7, display: "flex", gap: 6, alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.sandDeep } }, "🌱 ", /* @__PURE__ */ React.createElement("b", null, "\u041D\u043E\u0432\u0438\u0447\u043A\u0443:"), " ", ex.beginner)), /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen(!open), style: { marginTop: 7, background: "none", border: `1px solid ${C.border}`, borderRadius: 7, cursor: "pointer", color: C.textM, fontSize: 11, padding: "5px 10px", fontFamily: "inherit" } }, open ? "\u25B2 \u0421\u043A\u0440\u044B\u0442\u044C" : "\u25B6 \u0422\u0435\u0445\u043D\u0438\u043A\u0430 + \u0432\u0438\u0434\u0435\u043E"), open && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, padding: "12px", background: C.bgWarm, borderRadius: 10, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement(YTLink, { svgKey: ex.svgKey, name: ex.name }), ex.steps.map((s, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 6, marginBottom: 5 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 18, height: 18, borderRadius: 5, background: clr + "22", color: clr, fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, i + 1), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.5 } }, s))), ex.err?.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, fontWeight: 700, color: C.warn, marginBottom: 4 } }, "\u041E\u0448\u0438\u0431\u043A\u0438"), ex.err.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 11, color: C.textM, lineHeight: 1.4, marginBottom: 3 } }, "\xB7 ", e))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, padding: "5px 8px", background: C.card, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.bark } }, "📈 ", ex.prog))), /* @__PURE__ */ React.createElement(AIAssistant, { exName: ex.name, muscle: ex.muscle, steps: ex.steps, feel: ex.feel }), /* @__PURE__ */ React.createElement(SetTracker, { exId: ex.id, dayId, clr }))));
+  }
+  function WCCard({ ex, clr }) {
+    const [open, setOpen] = useState(false);
+    return /* @__PURE__ */ React.createElement("div", { style: { background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 6, boxShadow: C.shadow } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 9, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", { style: { width: 30, height: 30, borderRadius: 7, background: clr + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 } }, "\u25CB"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, ex.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: clr, fontWeight: 700, marginTop: 1 } }, ex.dur), /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen(!open), style: { marginTop: 4, background: "none", border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", color: C.textM, fontSize: 10, padding: "3px 8px", fontFamily: "inherit" } }, open ? "\u25B2 \u0421\u043A\u0440\u044B\u0442\u044C" : "\u25BC \u041A\u0430\u043A \u0434\u0435\u043B\u0430\u0442\u044C"), open && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7 } }, /* @__PURE__ */ React.createElement(YTLink, { svgKey: ex.svgKey, name: ex.name }), /* @__PURE__ */ React.createElement("div", { style: { background: C.bgWarm, borderRadius: 8, padding: "8px 10px" } }, ex.body.map((line, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 12, color: C.text, lineHeight: 1.5, marginBottom: i < ex.body.length - 1 ? 3 : 0, paddingLeft: 9, position: "relative" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", left: 0, color: clr } }, "\xB7"), line)))))));
+  }
+  function PreWorkoutCheck({ onDone }) {
+    const checks = [
+      { id: "ate", label: "\u041F\u043E\u0435\u043B\u0430 1\u20131.5 \u0447\u0430\u0441\u0430 \u043D\u0430\u0437\u0430\u0434 (\u043D\u0435 \u0433\u043E\u043B\u043E\u0434\u043D\u0430\u044F, \u043D\u0435 \u043F\u0435\u0440\u0435\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u0430\u044F)" },
+      { id: "water", label: "\u0412\u044B\u043F\u0438\u043B\u0430 300\u2013400 \u043C\u043B \u0432\u043E\u0434\u044B \u0434\u043E \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438" },
+      { id: "clothes", label: "\u0423\u0434\u043E\u0431\u043D\u0430\u044F \u043E\u0434\u0435\u0436\u0434\u0430 \u0438 \u043A\u0440\u043E\u0441\u0441\u043E\u0432\u043A\u0438" },
+      { id: "phone", label: "\u0422\u0435\u043B\u0435\u0444\u043E\u043D \u0437\u0430\u0440\u044F\u0436\u0435\u043D, \u043D\u0430\u0443\u0448\u043D\u0438\u043A\u0438 \u0433\u043E\u0442\u043E\u0432\u044B" },
+      { id: "warm", label: "\u0417\u043D\u0430\u044E, \u0447\u0442\u043E \u043D\u0430\u0447\u043D\u0443 \u0441 \u0440\u0430\u0437\u043C\u0438\u043D\u043A\u0438" }
+    ];
+    const [checked, setChecked] = useState({});
+    const toggle = (id) => setChecked((p) => ({ ...p, [id]: !p[id] }));
+    const allDone = checks.every((c) => checked[c.id]);
+    return /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 14, padding: "16px", marginBottom: 14, boxShadow: C.shadowM, border: `1.5px solid ${C.olive}44` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12 } }, "\u2705 \u0413\u043E\u0442\u043E\u0432\u0430 \u043A \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0435?"), checks.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, onClick: () => toggle(c.id), style: { display: "flex", gap: 9, alignItems: "center", marginBottom: 8, cursor: "pointer" } }, /* @__PURE__ */ React.createElement("div", { style: { width: 22, height: 22, borderRadius: 6, border: `2px solid ${checked[c.id] ? C.olive : C.border}`, background: checked[c.id] ? C.olive : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s" } }, checked[c.id] && /* @__PURE__ */ React.createElement("span", { style: { color: C.white, fontSize: 12, fontWeight: 700 } }, "\u2713")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: checked[c.id] ? C.textM : C.text, textDecoration: checked[c.id] ? "line-through" : "none", lineHeight: 1.4 } }, c.label))), /* @__PURE__ */ React.createElement("button", { onClick: onDone, disabled: !allDone, style: { width: "100%", marginTop: 8, padding: "11px", borderRadius: 10, background: allDone ? C.olive : C.border, border: "none", color: allDone ? C.white : C.textL, fontSize: 13, fontWeight: 700, cursor: allDone ? "pointer" : "default", fontFamily: "inherit", transition: "all .2s" } }, allDone ? "\u041D\u0430\u0447\u0430\u0442\u044C \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0443 💪" : `\u041E\u0442\u043C\u0435\u0442\u044C \u0432\u0441\u0435 \u043F\u0443\u043D\u043A\u0442\u044B (${Object.values(checked).filter(Boolean).length}/${checks.length})`));
+  }
+  function WorkoutHistory() {
+    const [log, setLog] = useLS("wrkHistory", {});
+    const [open, setOpen] = useState(null);
+    const [addMode, setAddMode] = useState(null); // workoutKey
+    const [sets, setSets] = useState([{ ex: "", kg: "", reps: "" }]);
+
+    const today = new Date().toLocaleDateString("ru-RU");
+    const entries = Object.entries(log).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 14);
+
+    const saveEntry = (dateKey) => {
+      const filled = sets.filter(s => s.ex.trim());
+      if (!filled.length) return;
+      const entry = { ...log, [dateKey]: [...(log[dateKey] || []), ...filled] };
+      setLog(entry); setAddMode(null); setSets([{ ex: "", kg: "", reps: "" }]);
+    };
+    const removeSet = (dateKey, idx) => {
+      const updated = (log[dateKey] || []).filter((_, i) => i !== idx);
+      setLog({ ...log, [dateKey]: updated });
+    };
+
+    const analyze = () => {
+      const allEx = {};
+      Object.entries(log).forEach(([date, sets]) => {
+        (sets || []).forEach(s => {
+          if (!s.ex) return;
+          if (!allEx[s.ex]) allEx[s.ex] = [];
+          allEx[s.ex].push({ date, kg: parseFloat(s.kg) || 0, reps: parseInt(s.reps) || 0 });
+        });
+      });
+      return allEx;
+    };
+
+    const analysis = analyze();
+    const [showAnalysis, setShowAnalysis] = useState(false);
+
+    return React.createElement("div", null,
+      React.createElement("div", { style: { background: "#FFFFFF", borderRadius: 16, padding: "14px 16px", marginBottom: 12, border: "1px solid #DDD8CF", boxShadow: "0 1px 4px rgba(0,0,0,0.07)" } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#2C2C2C" } }, "\ud83c\udfcb \u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0442\u0440\u0435\u043d\u0438\u0440\u043e\u0432\u043e\u043a"),
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement("button", { onClick: () => setShowAnalysis(!showAnalysis), style: { padding: "4px 10px", borderRadius: 7, border: "1px solid #4A6741", background: showAnalysis ? "#D8E8D4" : "transparent", fontSize: 11, color: "#4A6741", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\ud83d\udcc8 \u0410\u043d\u0430\u043b\u0438\u0437"),
+            React.createElement("button", { onClick: () => { setAddMode(today); setSets([{ ex: "", kg: "", reps: "" }]); }, style: { padding: "4px 10px", borderRadius: 7, border: "none", background: "#CC5500", fontSize: 11, color: "#fff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "+ \u0417\u0430\u043f\u0438\u0441\u044c")
+          )
+        ),
+
+        addMode && React.createElement("div", { style: { background: "#F7F4F0", borderRadius: 10, padding: "12px", marginBottom: 12 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#2C2C2C", marginBottom: 8 } }, "\u0422\u0440\u0435\u043d\u0438\u0440\u043e\u0432\u043a\u0430 ", addMode),
+          sets.map((s, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 5, marginBottom: 6, alignItems: "center" } },
+            React.createElement("input", { value: s.ex, onChange: e => { const n=[...sets]; n[i]={...n[i],ex:e.target.value}; setSets(n); }, placeholder: "\u0423\u043f\u0440\u0430\u0436\u043d\u0435\u043d\u0438\u0435", style: { flex: 2, padding: "6px 8px", borderRadius: 7, border: "1px solid #DDD8CF", fontSize: 11, fontFamily: "inherit", outline: "none" } }),
+            React.createElement("input", { value: s.kg, onChange: e => { const n=[...sets]; n[i]={...n[i],kg:e.target.value}; setSets(n); }, placeholder: "\u043a\u0433", type: "number", style: { flex: 1, padding: "6px 8px", borderRadius: 7, border: "1px solid #DDD8CF", fontSize: 11, fontFamily: "inherit", outline: "none" } }),
+            React.createElement("input", { value: s.reps, onChange: e => { const n=[...sets]; n[i]={...n[i],reps:e.target.value}; setSets(n); }, placeholder: "\u043f\u043e\u0432\u0442", type: "number", style: { flex: 1, padding: "6px 8px", borderRadius: 7, border: "1px solid #DDD8CF", fontSize: 11, fontFamily: "inherit", outline: "none" } }),
+            sets.length > 1 && React.createElement("button", { onClick: () => setSets(sets.filter((_,j)=>j!==i)), style: { background: "none", border: "none", color: "#DC2626", fontSize: 14, cursor: "pointer", padding: "0 2px" } }, "\u00d7")
+          )),
+          React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 4 } },
+            React.createElement("button", { onClick: () => setSets([...sets, { ex: "", kg: "", reps: "" }]), style: { flex: 1, padding: "7px", borderRadius: 8, border: "1px dashed #DDD8CF", background: "transparent", fontSize: 11, color: "#9E9890", cursor: "pointer", fontFamily: "inherit" } }, "+ \u0435\u0449\u0451 \u0443\u043f\u0440\u0430\u0436\u043d\u0435\u043d\u0438\u0435"),
+            React.createElement("button", { onClick: () => saveEntry(addMode), style: { flex: 1, padding: "7px", borderRadius: 8, border: "none", background: "#CC5500", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c"),
+            React.createElement("button", { onClick: () => setAddMode(null), style: { padding: "7px 10px", borderRadius: 8, border: "none", background: "#DDD8CF", color: "#6B6560", fontSize: 11, cursor: "pointer", fontFamily: "inherit" } }, "\u2715")
+          )
+        ),
+
+        showAnalysis && Object.keys(analysis).length > 0 && React.createElement("div", { style: { background: "#D8E8D4", borderRadius: 10, padding: "12px", marginBottom: 12 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#2E4428", marginBottom: 8 } }, "\ud83d\udcc8 \u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u043f\u043e \u0443\u043f\u0440\u0430\u0436\u043d\u0435\u043d\u0438\u044f\u043c"),
+          Object.entries(analysis).slice(0, 5).map(([ex, history], i) => {
+            const maxKg = Math.max(...history.map(h => h.kg).filter(Boolean));
+            const last = history[history.length - 1];
+            const first = history[0];
+            const progress = last.kg > first.kg ? "+" + (last.kg - first.kg).toFixed(1) + "\u043a\u0433" : last.kg === first.kg ? "=" : "-" + (first.kg - last.kg).toFixed(1) + "\u043a\u0433";
+            return React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: i < Object.keys(analysis).length - 1 ? "1px solid #4A674120" : "none" } },
+              React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#2C2C2C" } }, ex),
+              React.createElement("div", { style: { display: "flex", gap: 8 } },
+                maxKg > 0 && React.createElement("div", { style: { fontSize: 10, color: "#6B6560" } }, "\u043c\u0430\u043a\u0441: ", maxKg, "\u043a\u0433"),
+                history.length > 1 && React.createElement("div", { style: { fontSize: 10, fontWeight: 700, color: last.kg >= first.kg ? "#4A6741" : "#DC2626" } }, progress)
+              )
+            );
+          })
+        ),
+
+        entries.length === 0
+          ? React.createElement("div", { style: { textAlign: "center", padding: "20px", color: "#9E9890", fontSize: 12 } }, "\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u0437\u0430\u043f\u0438\u0441\u0435\u0439. \u041d\u0430\u0436\u043c\u0438 \u00ab+ \u0417\u0430\u043f\u0438\u0441\u044c\u00bb \u043f\u043e\u0441\u043b\u0435 \u0442\u0440\u0435\u043d\u0438\u0440\u043e\u0432\u043a\u0438!")
+          : entries.map(([date, dateSets]) => React.createElement("div", { key: date, style: { marginBottom: 6 } },
+              React.createElement("button", {
+                onClick: () => setOpen(open === date ? null : date),
+                style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", background: "none", border: "none", borderBottom: "1px solid #F0ECE8", cursor: "pointer", fontFamily: "inherit" }
+              },
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#2C2C2C" } }, date, date === today ? " \u2014 \u0441\u0435\u0433\u043e\u0434\u043d\u044f" : ""),
+                React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                  React.createElement("div", { style: { fontSize: 11, color: "#9E9890" } }, (dateSets || []).length, " \u0443\u043f\u0440."),
+                  React.createElement("div", { style: { fontSize: 10, color: "#9E9890" } }, open === date ? "\u25b2" : "\u25bc")
+                )
+              ),
+              open === date && React.createElement("div", { style: { paddingTop: 6, paddingBottom: 4 } },
+                (dateSets || []).map((s, si) => React.createElement("div", { key: si, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0" } },
+                  React.createElement("div", { style: { fontSize: 12, color: "#2C2C2C" } }, s.ex),
+                  React.createElement("div", { style: { display: "flex", gap: 12, alignItems: "center" } },
+                    React.createElement("div", { style: { fontSize: 11, color: "#6B6560" } }, s.kg ? s.kg + "\u043a\u0433" : "", s.kg && s.reps ? " \u00d7 " : "", s.reps ? s.reps + "\u043f\u043e\u0432\u0442" : ""),
+                    React.createElement("button", { onClick: () => removeSet(date, si), style: { background: "none", border: "none", color: "#DDD8CF", fontSize: 13, cursor: "pointer", padding: "0 2px" } }, "\u2715")
+                  )
+                )),
+                React.createElement("button", { onClick: () => { setAddMode(date); setSets([{ ex: "", kg: "", reps: "" }]); }, style: { marginTop: 4, padding: "4px 8px", borderRadius: 6, border: "1px dashed #DDD8CF", background: "transparent", fontSize: 10, color: "#9E9890", cursor: "pointer", fontFamily: "inherit" } }, "+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c")
+              )
+            ))
+      )
+    );
+  }
+
+  function SleepHistory() {
+    const [log] = useLS("sleepLog", {});
+    const entries = Object.entries(log).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 14);
+    const avg = (() => {
+      const filled = entries.filter(([, e]) => e.h > 0);
+      return filled.length ? (filled.reduce((s, [, e]) => s + e.h, 0) / filled.length).toFixed(1) : null;
+    })();
+    const qLabels = ["", "\ud83d\ude34 \u041f\u043b\u043e\u0445\u043e", "\ud83d\ude15 \u0421\u0440\u0435\u0434\u043d\u0435", "\ud83d\ude42 \u041d\u043e\u0440\u043c\u0430", "\ud83d\ude04 \u0425\u043e\u0440\u043e\u0448\u043e"];
+    const sleepColor = (h) => h >= 7 ? "#4A6741" : h >= 6 ? "#CC5500" : "#DC2626";
+
+    return React.createElement("div", { style: { background: "#FFFFFF", borderRadius: 16, padding: "14px 16px", marginBottom: 12, border: "1px solid #DDD8CF", boxShadow: "0 1px 4px rgba(0,0,0,0.07)" } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#2C2C2C" } }, "\ud83c\udf19 \u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0441\u043d\u0430"),
+        avg && React.createElement("div", { style: { fontSize: 12, color: "#4A6741", fontWeight: 700 } }, "\u0421\u0440\u0435\u0434\u043d\u0435\u0435: ", avg, "\u0447")
+      ),
+      entries.length === 0
+        ? React.createElement("div", { style: { textAlign: "center", padding: "16px", color: "#9E9890", fontSize: 12 } }, "\u041e\u0442\u043c\u0435\u0447\u0430\u0439 \u0441\u043e\u043d \u043d\u0430 \u0432\u043a\u043b\u0430\u0434\u043a\u0435 \u00ab\u0421\u0435\u0433\u043e\u0434\u043d\u044f\u00bb \u2014 \u0438\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u044f\u0432\u0438\u0442\u0441\u044f \u0437\u0434\u0435\u0441\u044c")
+        : React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", gap: 3, alignItems: "flex-end", height: 48, marginBottom: 6 } },
+              entries.slice(0, 14).reverse().map(([date, e], i) => React.createElement("div", { key: date, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 } },
+                React.createElement("div", { style: { fontSize: 8, color: "#9E9890" } }, e.h > 0 ? e.h : ""),
+                React.createElement("div", { style: { width: "100%", borderRadius: 3, height: e.h ? Math.max(4, Math.round(e.h / 9 * 40)) : 4, background: e.h > 0 ? sleepColor(e.h) : "#DDD8CF" } })
+              ))
+            ),
+            React.createElement("div", null,
+              entries.map(([date, e], i) => React.createElement("div", { key: date, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < entries.length - 1 ? "1px solid #F0ECE8" : "none" } },
+                React.createElement("div", { style: { fontSize: 12, color: "#2C2C2C", fontWeight: 500 } }, date),
+                React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+                  e.h > 0 && React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: sleepColor(e.h) } }, e.h, "\u0447"),
+                  e.q > 0 && React.createElement("div", { style: { fontSize: 11, color: "#9E9890" } }, qLabels[e.q])
+                )
+              ))
+            )
+          )
+    );
+  }
+
+  // Небольшое кольцо прогресса — для счётчика «выпито сегодня».
+  function MiniRing({ done, total, size = 30, color = "#C97A3D" }) {
+    const r = (size - 5) / 2;
+    const circ = 2 * Math.PI * r;
+    const frac = total > 0 ? done / total : 0;
+    const complete = total > 0 && done >= total;
+    return React.createElement("div", { style: { position: "relative", width: size, height: size, flexShrink: 0 } },
+      React.createElement("svg", { width: size, height: size, style: { transform: "rotate(-90deg)" } },
+        React.createElement("circle", { cx: size / 2, cy: size / 2, r, fill: "none", stroke: "#E0D6C4", strokeWidth: 3 }),
+        React.createElement("circle", { cx: size / 2, cy: size / 2, r, fill: "none",
+          stroke: complete ? "#5A6B42" : color, strokeWidth: 3, strokeLinecap: "round",
+          strokeDasharray: circ, strokeDashoffset: circ * (1 - frac),
+          style: { transition: "stroke-dashoffset .5s cubic-bezier(.4,0,.2,1), stroke .3s" } })
+      ),
+      React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: complete ? 13 : 9, fontWeight: 700, color: complete ? "#5A6B42" : C.textM, fontVariantNumeric: "tabular-nums" } },
+        complete ? "✓" : `${done}/${total}`)
+    );
+  }
+
+  // История приёма: последние 14 дней. Читает ключи pillsTaken_<дата> и считает
+  // долю принятого от активных в тот день. Показывает полоски + текущий стрик.
+  function AdherenceHistory({ packAnchor }) {
+    const pills = loadPills();
+    const days = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
+      const key = "pillsTaken_" + d.toLocaleDateString("ru-RU");
+      let taken = {};
+      try { const s = localStorage.getItem(key); if (s) taken = JSON.parse(s); } catch {}
+      const active = activePillsOn(d, packAnchor, pills);
+      const total = active.length;
+      const done = active.filter(p => taken[p.id]).length;
+      const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;
+      days.push({ d, total, done, frac: total ? done / total : null,
+        label: ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][dow], dayNum: d.getDate() });
+    }
+    let streak = 0;
+    for (let i = days.length - 1; i >= 0; i--) {
+      const day = days[i];
+      if (day.total === 0) continue;
+      if (day.frac >= 1) streak++; else break;
+    }
+    const colorFor = (f) => f === null ? C.border : f >= 1 ? C.ok : f >= 0.5 ? C.olive : f > 0 ? C.oliveM : C.border;
+
+    return React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "13px 14px", marginBottom: 12, border: `0.5px solid ${C.border}` } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "📊 История приёма (14 дней)"),
+        streak > 0 && React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.ok } }, "🔥 ", streak, streak === 1 ? " день" : streak < 5 ? " дня" : " дней", " подряд")
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 3, alignItems: "flex-end" } },
+        days.map((day, i) => React.createElement("div", { key: i, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 } },
+          React.createElement("div", {
+            title: day.total ? `${day.done}/${day.total}` : "нет таблеток",
+            style: { width: "100%", height: 40, borderRadius: 4, background: C.bg, position: "relative", overflow: "hidden", border: `0.5px solid ${C.border}` }
+          },
+            day.frac !== null && React.createElement("div", { style: { position: "absolute", bottom: 0, left: 0, right: 0, height: `${Math.max(6, day.frac * 100)}%`, background: colorFor(day.frac), transition: "height .4s" } })
+          ),
+          React.createElement("div", { style: { fontSize: 8, color: C.textL } }, day.dayNum)
+        ))
+      ),
+      React.createElement("div", { style: { fontSize: 10.5, color: C.textL, marginTop: 8, lineHeight: 1.5 } },
+        "Высота столбика = доля принятого за день. Зелёный — всё принято.")
+    );
+  }
+
+  function PillsModule({ compact, cycleAnchor, packAnchor }) {
+    const todayKey = new Date().toLocaleDateString("ru-RU");
+    // Единый источник: модульный DEFAULT_PILLS + стор PILLS_LS_KEY.
+    const [pills, setPills] = useLS(PILLS_LS_KEY, DEFAULT_PILLS);
+    const [taken, setTaken] = useLS("pillsTaken_" + todayKey, {});
+    const [showAdd, setShowAdd] = useState(false);
+    const [newName, setNewName] = useState("");
+    const [newTime, setNewTime] = useState("08:00");
+    const [newNote, setNewNote] = useState("");
+    const [openPill, setOpenPill] = useState(null);
+    const [editId, setEditId] = useState(null);     // id препарата в режиме редактирования
+    const [editFields, setEditFields] = useState({ name: "", time: "", note: "" });
+    const toggle = (id) => setTaken({ ...taken, [id]: !taken[id] });
+    const markAllTaken = () => {
+      const next = { ...taken };
+      activePills.forEach(p => { next[p.id] = true; });
+      setTaken(next);
+    };
+    const [confirmDel, setConfirmDel] = useState(null);
+    const addPill = () => {
+      if (!newName.trim()) return;
+      const id = "p_" + Date.now();
+      setPills([...pills, { id, name: newName.trim(), time: newTime, color: PC.NIGHT, bg: PC.NIGHT_BG, note: newNote.trim() }]);
+      setNewName(""); setNewTime("08:00"); setNewNote(""); setShowAdd(false);
+    };
+    const removePill = (id) => setPills(pills.filter(p => p.id !== id));
+    const startEditPill = (p) => {
+      setEditId(p.id);
+      setEditFields({ name: p.name, time: p.time || "08:00", note: p.note || "" });
+      setOpenPill(p.id);
+    };
+    const saveEditPill = () => {
+      setPills(pills.map(p => p.id === editId
+        ? { ...p, name: editFields.name.trim() || p.name, time: editFields.time || p.time, note: editFields.note }
+        : p));
+      setEditId(null);
+    };
+    const BUILTIN = BUILTIN_PILL_IDS;
+
+    const todayDate = new Date();
+    const isActive = (p) => isPillActiveOn(p, todayDate, packAnchor);
+    const activePills = activePillsOn(todayDate, packAnchor, pills);
+    const upcomingPills = pills.filter(p => !isActive(p) && p.startDate && mkd(p.startDate) > todayDate);
+    const doneCount = activePills.filter(p => taken[p.id]).length;
+
+    // Сегодня день перерыва Ярины?
+    const isYarinaPillFree = packAnchor && !isYarinaActiveToday(todayDate, packAnchor);
+
+    if (compact) {
+      const allDone = activePills.length > 0 && doneCount === activePills.length;
+      return React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 12, border: `0.5px solid ${allDone ? C.ok + "55" : C.border}` } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "💊 Таблетки сегодня"),
+          React.createElement(MiniRing, { done: doneCount, total: activePills.length })
+        ),
+        allDone && React.createElement("div", { style: { fontSize: 11.5, color: C.ok, fontWeight: 600, marginBottom: 9, textAlign: "center" } }, "Всё принято на сегодня 🎉"),
+        // Сетка 2 колонки — карточки таблеток с подложкой по времени дня
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 } },
+          activePills.map(p => React.createElement("button", {
+            key: p.id, onClick: () => toggle(p.id),
+            "aria-pressed": !!taken[p.id],
+            "aria-label": (taken[p.id] ? "Отменить приём: " : "Отметить принятым: ") + p.name + ", " + p.time,
+            title: p.name,
+            style: { display: "flex", alignItems: "center", gap: 7, padding: "9px 9px", minHeight: 44,
+              background: taken[p.id] ? p.bg : C.bg,
+              border: `0.5px solid ${taken[p.id] ? p.color : C.border}`,
+              borderRadius: 8, cursor: "pointer", textAlign: "left", fontFamily: "inherit" }
+          },
+            React.createElement("div", { className: taken[p.id] ? "ux-pop" : "", style: { width: 16, height: 16, border: `1.5px solid ${p.color}`, borderRadius: 4, background: taken[p.id] ? p.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+              taken[p.id] && React.createElement("span", { style: { color: "#fff", fontSize: 11, lineHeight: 1 } }, "✓")
+            ),
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+              React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: p.color, textDecoration: taken[p.id] ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, p.name),
+              React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 1 } }, p.time)
+            )
+          ))
+        ),
+        // Плашка про перерыв Ярины — только когда сегодня перерыв (день 22-28)
+        isYarinaPillFree && React.createElement("div", { style: { marginTop: 9, padding: "7px 10px", background: C.pinkSoft, borderRadius: 7, border: `0.5px solid ${C.pink}33` } },
+          React.createElement("div", { style: { fontSize: 11, color: C.pink, lineHeight: 1.5 } }, "Перерыв Ярины: пилюли не принимаешь до начала след. пачки.")
+        )
+      );
+    }
+
+    return React.createElement("div", null,
+      React.createElement("div", { style: { background: C.card, borderRadius: 14, padding: "14px 16px", marginBottom: 12, border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+          React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: C.text } }, "💊 Мои таблетки"),
+          React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+            React.createElement(MiniRing, { done: doneCount, total: activePills.length }),
+            React.createElement("button", { onClick: () => setShowAdd(!showAdd),
+              "aria-label": showAdd ? "Закрыть форму добавления" : "Добавить таблетку", title: "Добавить таблетку",
+              style: { width: 30, height: 30, borderRadius: "50%", background: C.olive, border: "none", color: "#fff", fontSize: 20, cursor: "pointer", lineHeight: 1, paddingBottom: 2, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center" } }, showAdd ? "×" : "+")
+          )
+        ),
+        // Быстрое действие: отметить всё принятым (когда есть что отмечать)
+        activePills.length > 0 && doneCount < activePills.length && React.createElement("button", {
+          onClick: markAllTaken,
+          style: { width: "100%", padding: "8px", marginBottom: 10, borderRadius: 9, background: C.sandSoft,
+            border: `0.5px solid ${C.sand}55`, color: C.sandDeep, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+        }, "✓ Отметить все принятыми (", activePills.length - doneCount, ")"),
+        // Плашка про перерыв Ярины (на верху списка)
+        isYarinaPillFree && React.createElement("div", { style: { padding: "9px 12px", background: C.pinkSoft, borderRadius: 9, border: `0.5px solid ${C.pink}33`, marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.pink, marginBottom: 2 } }, "Перерыв в приёме Ярины"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, "Сегодня день ", cycleAnchor ? getCycleDay(todayDate, cycleAnchor) : "?", " цикла. Активный приём возобновится с начала следующей пачки.")
+        ),
+        activePills.map(p => React.createElement("div", { key: p.id },
+          React.createElement("div", {
+            style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `0.5px solid ${C.border}`, cursor: "pointer" },
+            onClick: () => setOpenPill(openPill === p.id ? null : p.id)
+          },
+            React.createElement("button", {
+              onClick: (e) => { e.stopPropagation(); toggle(p.id); },
+              "aria-pressed": !!taken[p.id],
+              "aria-label": (taken[p.id] ? "Отменить приём: " : "Отметить принятым: ") + p.name,
+              className: taken[p.id] ? "ux-pop" : "",
+              style: { width: 30, height: 30, borderRadius: 8, border: `1.5px solid ${taken[p.id] ? p.color : C.borderM}`,
+                background: taken[p.id] ? p.color : "transparent", cursor: "pointer", flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, fontFamily: "inherit" }
+            }, taken[p.id] ? "✓" : ""),
+            React.createElement("div", { style: { flex: 1 } },
+              React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: taken[p.id] ? C.textL : C.text, textDecoration: taken[p.id] ? "line-through" : "none" } }, p.name),
+              React.createElement("div", { style: { fontSize: 11, color: p.color, marginTop: 1, fontWeight: 500 } }, p.time)
+            ),
+            React.createElement("div", { "aria-hidden": "true", style: { fontSize: 11, color: C.textL } }, openPill === p.id ? "▲" : "▼")
+          ),
+          openPill === p.id && React.createElement("div", { className: "ux-enter", style: { background: p.bg, borderRadius: 8, padding: "10px 12px", margin: "4px 0 8px", fontSize: 12, color: C.text, lineHeight: 1.6 } },
+            editId === p.id
+              ? React.createElement("div", null,
+                  React.createElement("input", { value: editFields.name, onChange: e => setEditFields({ ...editFields, name: e.target.value }),
+                    "aria-label": "Название", placeholder: "Название",
+                    style: { width: "100%", padding: "7px 9px", borderRadius: 7, border: `0.5px solid ${C.border}`, fontSize: 12, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box", outline: "none", background: "#fff" } }),
+                  React.createElement("input", { type: "time", value: editFields.time, onChange: e => setEditFields({ ...editFields, time: e.target.value }),
+                    "aria-label": "Время",
+                    style: { width: "100%", padding: "7px 9px", borderRadius: 7, border: `0.5px solid ${C.border}`, fontSize: 12, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box", outline: "none", background: "#fff" } }),
+                  React.createElement("textarea", { value: editFields.note, onChange: e => setEditFields({ ...editFields, note: e.target.value }),
+                    "aria-label": "Заметка", placeholder: "Заметка", rows: 3,
+                    style: { width: "100%", padding: "7px 9px", borderRadius: 7, border: `0.5px solid ${C.border}`, fontSize: 12, fontFamily: "inherit", marginBottom: 8, boxSizing: "border-box", outline: "none", background: "#fff", resize: "vertical" } }),
+                  React.createElement("div", { style: { display: "flex", gap: 6 } },
+                    React.createElement("button", { onClick: saveEditPill,
+                      style: { flex: 1, padding: "7px", borderRadius: 7, background: C.olive, border: "none", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } }, "Сохранить"),
+                    React.createElement("button", { onClick: () => setEditId(null),
+                      style: { flex: 1, padding: "7px", borderRadius: 7, background: C.border, border: "none", color: C.textM, fontSize: 11, cursor: "pointer", fontFamily: "inherit" } }, "Отмена")
+                  )
+                )
+              : React.createElement(React.Fragment, null,
+                  React.createElement("div", null, p.note || "Нет заметок"),
+                  React.createElement("div", { style: { display: "flex", gap: 14, marginTop: 8, alignItems: "center" } },
+                    React.createElement("button", { onClick: () => startEditPill(p),
+                      style: { background: "none", border: "none", color: C.info, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0, fontFamily: "inherit" } }, "✎ Изменить"),
+                    !BUILTIN.includes(p.id) && (confirmDel === p.id
+                      ? React.createElement("span", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                          React.createElement("span", { style: { fontSize: 11, color: C.warn, fontWeight: 600 } }, "Удалить?"),
+                          React.createElement("button", { onClick: () => { removePill(p.id); setConfirmDel(null); },
+                            style: { background: C.warn, border: "none", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "5px 12px", borderRadius: 7, fontFamily: "inherit" } }, "Да"),
+                          React.createElement("button", { onClick: () => setConfirmDel(null),
+                            style: { background: C.border, border: "none", color: C.textM, fontSize: 11, cursor: "pointer", padding: "5px 12px", borderRadius: 7, fontFamily: "inherit" } }, "Нет")
+                        )
+                      : React.createElement("button", {
+                          onClick: () => setConfirmDel(p.id),
+                          style: { background: "none", border: "none", color: C.warn, fontSize: 11, cursor: "pointer", padding: 0, fontFamily: "inherit" }
+                        }, "✕ Удалить"))
+                  )
+                )
+          )
+        )),
+        showAdd && React.createElement("div", { style: { marginTop: 12, background: C.bg, borderRadius: 10, padding: "12px" } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 8 } }, "Добавить таблетку"),
+          React.createElement("input", { value: newName, onChange: e => setNewName(e.target.value), placeholder: "Название", style: { width: "100%", padding: "8px 10px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box", outline: "none" } }),
+          React.createElement("input", { value: newTime, onChange: e => setNewTime(e.target.value), type: "time", style: { width: "100%", padding: "8px 10px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box", outline: "none" } }),
+          React.createElement("input", { value: newNote, onChange: e => setNewNote(e.target.value), placeholder: "Заметка (зачем, как принимать...)", style: { width: "100%", padding: "8px 10px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", marginBottom: 8, boxSizing: "border-box", outline: "none" } }),
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement("button", { onClick: addPill, style: { flex: 1, padding: "9px", borderRadius: 8, background: C.olive, border: "none", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } }, "Добавить"),
+            React.createElement("button", { onClick: () => setShowAdd(false), style: { flex: 1, padding: "9px", borderRadius: 8, background: C.border, border: "none", color: C.textM, fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "Отмена")
+          )
+        )
+      ),
+      // Блок «Скоро появится» — будущие препараты (Перфектил, железо, цинк до их startDate)
+      upcomingPills.length > 0 && React.createElement("div", { style: { background: C.infoSoft, borderRadius: 12, padding: "12px 14px", border: `0.5px solid ${C.info}33`, marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.info, marginBottom: 8 } }, "📅 Скоро появится"),
+        upcomingPills.map((p, i) => React.createElement("div", { key: p.id, style: { marginBottom: i < upcomingPills.length - 1 ? 6 : 0 } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, p.name),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } }, "С ", mkd(p.startDate).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }), " · ", p.time)
+        ))
+      ),
+      // Совместимость — короткий блок-подсказка, полная матрица будет на вкладке «Здоровье»
+      React.createElement("div", { style: { background: C.oliveSoft, borderRadius: 12, padding: "12px 14px", border: `0.5px solid ${C.olive}33` } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.oliveDeep, marginBottom: 8 } }, "💡 Главные правила"),
+        [
+          ["Железо + витамин C", "Всегда вместе — витамин C усиливает усвоение."],
+          ["Железо НЕ совмещать", "С Перфектилом, цинком, кофе, чаем, молочным — минимум 2 часа разрыв."],
+          ["Чёрный стул от железа", "Это норма, не кровь. Алая кровь — точно не от железа, к врачу."],
+          ["Перфектил только с едой", "Натощак — тошнота и раздражение ЖКТ."],
+        ].map(([q, a], i, arr) => React.createElement("div", { key: i, style: { marginBottom: i < arr.length - 1 ? 8 : 0 } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.oliveDeep } }, q),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } }, a)
+        )),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 10, fontStyle: "italic" } }, "Полная матрица совместимости — на вкладке «Здоровье».")
+      ),
+      // История приёма (стрик + 14 дней)
+      React.createElement(AdherenceHistory, { packAnchor })
+    );
+  }
+
+  function SleepTracker() {
+    const today = new Date().toLocaleDateString("ru-RU");
+    const [log, setLog] = useLS("sleepLog", {});
+    const entry = log[today] || { h: 0, q: 0 };
+    const setEntry = (val) => setLog({ ...log, [today]: val });
+    const hours = [5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9];
+    const qualities = [
+      { v: 1, l: "\ud83d\ude34 \u041f\u043b\u043e\u0445\u043e" },
+      { v: 2, l: "\ud83d\ude15 \u0421\u0440\u0435\u0434\u043d\u0435" },
+      { v: 3, l: "\ud83d\ude42 \u041d\u043e\u0440\u043c\u0430" },
+      { v: 4, l: "\ud83d\ude04 \u0425\u043e\u0440\u043e\u0448\u043e" },
+    ];
+    const sleepColor = entry.h >= 7 ? "#4A6741" : entry.h >= 6 ? "#CC5500" : entry.h > 0 ? "#DC2626" : "#9E9890";
+    const weekDays = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - 6 + i);
+      const key = d.toLocaleDateString("ru-RU");
+      const e = log[key] || { h: 0, q: 0 };
+      return { key, h: e.h, q: e.q, label: ["\u041f\u043d","\u0412\u0442","\u0421\u0440","\u0427\u0442","\u041f\u0442","\u0421\u0431","\u0412\u0441"][d.getDay() === 0 ? 6 : d.getDay() - 1], isToday: key === today };
+    });
+    const avg = (() => { const filled = weekDays.filter(d => d.h > 0); return filled.length ? (filled.reduce((s, d) => s + d.h, 0) / filled.length).toFixed(1) : null; })();
+    return React.createElement("div", { style: { background: "#FFFFFF", borderRadius: 16, padding: "14px 16px", marginBottom: 12, border: "1px solid #DDD8CF", boxShadow: "0 1px 4px rgba(0,0,0,0.07)" } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#2C2C2C" } }, "\ud83c\udf19 \u0421\u043e\u043d \u0441\u0435\u0433\u043e\u0434\u043d\u044f"),
+        entry.h > 0
+          ? React.createElement("div", { style: { fontSize: 13, fontWeight: 800, color: sleepColor } }, entry.h, " \u0447")
+          : React.createElement("div", { style: { fontSize: 11, color: "#9E9890" } }, "\u043d\u0435 \u043e\u0442\u043c\u0435\u0447\u0435\u043d\u043e")
+      ),
+      React.createElement("div", { style: { marginBottom: 10 } },
+        React.createElement("div", { style: { fontSize: 10, color: "#9E9890", marginBottom: 5, fontWeight: 600 } }, "\u0421\u043a\u043e\u043b\u044c\u043a\u043e \u0447\u0430\u0441\u043e\u0432 \u0441\u043f\u0430\u043b\u0430?"),
+        React.createElement("div", { style: { display: "flex", gap: 5, overflowX: "auto", paddingBottom: 2 } },
+          hours.map(h => React.createElement("button", {
+            key: h, onClick: () => setEntry({ ...entry, h }),
+            style: { padding: "5px 9px", borderRadius: 7, border: `1.5px solid ${entry.h === h ? sleepColor : "#DDD8CF"}`,
+              background: entry.h === h ? sleepColor + "18" : "#F7F4F0", fontSize: 11, fontWeight: entry.h === h ? 700 : 500,
+              color: entry.h === h ? sleepColor : "#6B6560", cursor: "pointer", fontFamily: "inherit" }
+          }, h, "\u0447"))
+        )
+      ),
+      React.createElement("div", { style: { marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 10, color: "#9E9890", marginBottom: 5, fontWeight: 600 } }, "\u041a\u0430\u0447\u0435\u0441\u0442\u0432\u043e?"),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          qualities.map(q => React.createElement("button", {
+            key: q.v, onClick: () => setEntry({ ...entry, q: q.v }),
+            style: { flex: 1, padding: "6px 4px", borderRadius: 8, border: `1.5px solid ${entry.q === q.v ? "#4A6741" : "#DDD8CF"}`,
+              background: entry.q === q.v ? "#D8E8D4" : "#F7F4F0", fontSize: 10, fontWeight: entry.q === q.v ? 700 : 500,
+              color: entry.q === q.v ? "#2E4428" : "#6B6560", cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }
+          }, q.l))
+        )
+      ),
+      React.createElement("div", { style: { borderTop: "1px solid #DDD8CF", paddingTop: 10 } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 6 } },
+          React.createElement("div", { style: { fontSize: 10, color: "#9E9890", fontWeight: 600 } }, "\u041d\u0435\u0434\u0435\u043b\u044f"),
+          avg && React.createElement("div", { style: { fontSize: 10, color: "#4A6741", fontWeight: 700 } }, "\u0421\u0440\u0435\u0434\u043d\u0435\u0435: ", avg, "\u0447")
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "flex-end", height: 32 } },
+          weekDays.map(d => React.createElement("div", { key: d.key, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 } },
+            React.createElement("div", { style: {
+              width: "100%", borderRadius: 3,
+              height: d.h ? Math.max(4, Math.round(d.h / 9 * 28)) : 4,
+              background: d.h >= 7 ? "#4A6741" : d.h >= 6 ? "#CC5500" : d.h > 0 ? "#FCA5A5" : "#DDD8CF",
+              opacity: d.isToday ? 1 : 0.7,
+              border: d.isToday ? "1.5px solid #CC5500" : "none"
+            } }),
+            React.createElement("div", { style: { fontSize: 8, color: d.isToday ? "#CC5500" : "#9E9890", fontWeight: d.isToday ? 700 : 400 } }, d.label)
+          ))
+        )
+      )
+    );
+  }
+
+  function WaterTracker() {
+    const todayKey = `water_${(/* @__PURE__ */ new Date()).toDateString()}`;
+    const [glasses, setGlasses] = useLS(todayKey, 0);
+    const goal = 8;
+    const pct = Math.min(100, Math.round(glasses / goal * 100));
+    return /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 12, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, "💧 \u0412\u043E\u0434\u0430 \u0441\u0435\u0433\u043E\u0434\u043D\u044F"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM } }, glasses, "/", goal, " \u0441\u0442\u0430\u043A\u0430\u043D\u043E\u0432")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 8 } }, Array.from({ length: goal }, (_, i) => /* @__PURE__ */ React.createElement("div", { key: i, onClick: () => setGlasses(i < glasses ? i : i + 1), style: { flex: 1, height: 22, borderRadius: 4, background: i < glasses ? C.olive : C.bgWarm, border: `1px solid ${i < glasses ? C.olive : C.border}`, cursor: "pointer", transition: "all .15s" } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL } }, pct === 100 ? "\u0426\u0435\u043B\u044C \u0434\u043E\u0441\u0442\u0438\u0433\u043D\u0443\u0442\u0430! 🎉" : `\u041E\u0441\u0442\u0430\u043B\u043E\u0441\u044C ${goal - glasses} \u0441\u0442\u0430\u043A\u0430\u043D\u0430 (\u2248${(goal - glasses) * 250}\u043C\u043B)`), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setGlasses(Math.max(0, glasses - 1)), style: { width: 24, height: 24, borderRadius: 6, border: `1px solid ${C.border}`, background: "none", cursor: "pointer", fontSize: 12, color: C.textM } }, "\u2212"), /* @__PURE__ */ React.createElement("button", { onClick: () => setGlasses(Math.min(goal, glasses + 1)), style: { width: 24, height: 24, borderRadius: 6, border: "none", background: C.olive, cursor: "pointer", fontSize: 12, color: C.white, fontWeight: 700 } }, "+"))));
+  }
+  function WorkoutNotes({ dayId }) {
+    const dateKey = `note_${dayId}_${(/* @__PURE__ */ new Date()).toLocaleDateString("ru-RU")}`;
+    const [note, setNote] = useLS(dateKey, "");
+    const [open, setOpen] = useState(false);
+    return /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen(!open), style: { width: "100%", padding: "9px 12px", borderRadius: 9, background: C.card, border: `1px solid ${C.border}`, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM } }, "\u270F\uFE0F \u0417\u0430\u043C\u0435\u0442\u043A\u0438 \u043A \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0435"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textL } }, note ? `${note.length} \u0441\u0438\u043C\u0432.` : "\u043F\u0443\u0441\u0442\u043E", " ", open ? "\u25B2" : "\u25BC")), open && /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        value: note,
+        onChange: (e) => setNote(e.target.value),
+        placeholder: "\u041A\u0430\u043A \u0441\u0435\u0431\u044F \u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C? \u0427\u0442\u043E \u0434\u0430\u043B\u043E\u0441\u044C \u043B\u0435\u0433\u043A\u043E \u0438\u043B\u0438 \u0441\u043B\u043E\u0436\u043D\u043E? \u0427\u0442\u043E \u0445\u043E\u0447\u0435\u0448\u044C \u0437\u0430\u043F\u043E\u043C\u043D\u0438\u0442\u044C...",
+        style: { width: "100%", marginTop: 5, padding: "10px", borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 12, fontFamily: "inherit", color: C.text, resize: "vertical", minHeight: 80, boxSizing: "border-box", outline: "none", lineHeight: 1.6 }
+      }
+    ));
+  }
+  function WorkoutScreen({ day }) {
+    const [phase, setPhase] = useState("pre");
+    const phases = [{ id: "pre", l: "🎯 \u0421\u0442\u0430\u0440\u0442" }, { id: "warm", l: "🔥 \u0420\u0430\u0437\u043C\u0438\u043D\u043A\u0430" }, { id: "main", l: "💪 \u0422\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0430" }, { id: "cool", l: "🌙 \u0417\u0430\u043C\u0438\u043D\u043A\u0430" }];
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 13, background: C.bgWarm, borderRadius: 9, padding: 3 } }, phases.map((p) => /* @__PURE__ */ React.createElement("button", { key: p.id, onClick: () => setPhase(p.id), style: { flex: 1, padding: "7px 3px", borderRadius: 7, border: "none", cursor: "pointer", background: phase === p.id ? C.white : "transparent", color: phase === p.id ? C.text : C.textL, fontFamily: "inherit", fontSize: 10, fontWeight: phase === p.id ? 700 : 500, boxShadow: phase === p.id ? C.shadow : "none", transition: "all .15s", whiteSpace: "nowrap" } }, p.l))), phase === "pre" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 10, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 } }, "\u23F1 \u041F\u043B\u0430\u043D \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438"), [{ l: "\u0420\u0430\u0437\u043C\u0438\u043D\u043A\u0430", m: 10, e: "🔥" }, { l: "\u041E\u0441\u043D\u043E\u0432\u043D\u0430\u044F \u0447\u0430\u0441\u0442\u044C", m: day.totalMin - 20, e: "💪" }, { l: "\u0417\u0430\u043C\u0438\u043D\u043A\u0430", m: 10, e: "🌙" }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.text } }, it.e, " ", it.l), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: day.clr } }, it.m, " \u043C\u0438\u043D"))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 7 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text } }, "\u0418\u0442\u043E\u0433\u043E"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: C.text } }, day.totalMin, " \u043C\u0438\u043D"))), /* @__PURE__ */ React.createElement(PreWorkoutCheck, { onDone: () => setPhase("warm") })), phase === "warm" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { padding: "8px 11px", background: C.warnSoft, borderRadius: 8, marginBottom: 10, border: `1px solid ${C.warn}33` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.warn } }, "10 \u043C\u0438\u043D \xB7 \u041F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u0440\u0430\u0437\u043C\u0438\u043D\u043A\u0430 \u0432\u0434\u0432\u043E\u0439\u043D\u0435 \u0432\u0430\u0436\u043D\u0430. \u041D\u0430\u0436\u043C\u0438 \xAB\u041A\u0430\u043A \u0434\u0435\u043B\u0430\u0442\u044C\xBB \u0434\u043B\u044F \u0438\u043D\u0441\u0442\u0440\u0443\u043A\u0446\u0438\u0439 \u0438 \u0432\u0438\u0434\u0435\u043E.")), day.warmup.map((ex, i) => /* @__PURE__ */ React.createElement(WCCard, { key: i, ex, clr: day.clr })), /* @__PURE__ */ React.createElement("button", { onClick: () => setPhase("main"), style: { width: "100%", marginTop: 8, padding: "12px", borderRadius: 11, background: day.clr, border: "none", color: C.white, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\u041D\u0430\u0447\u0430\u0442\u044C \u043E\u0441\u043D\u043E\u0432\u043D\u0443\u044E \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0443 \u2192")), phase === "main" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(WorkoutNotes, { dayId: day.id }), /* @__PURE__ */ React.createElement("div", { style: { padding: "8px 11px", background: C.bgWarm, borderRadius: 8, marginBottom: 10, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM } }, day.exercises.length, " \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u0439 \xB7 \xAB\u25B6 \u0421\u0445\u0435\u043C\u0430 + \u0442\u0435\u0445\u043D\u0438\u043A\u0430\xBB \u2014 \u0438\u043B\u043B\u044E\u0441\u0442\u0440\u0430\u0446\u0438\u044F + AI-\u0442\u0440\u0435\u043D\u0435\u0440 \xB7 \u0417\u0430\u043F\u0438\u0441\u044B\u0432\u0430\u0439 \u043F\u043E\u0434\u0445\u043E\u0434\u044B \u043F\u0440\u044F\u043C\u043E \u0437\u0434\u0435\u0441\u044C")), day.exercises.map((ex, i) => /* @__PURE__ */ React.createElement(ExCard, { key: i, ex, dayId: day.id, clr: day.clr }))), phase === "cool" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { padding: "8px 11px", background: C.oliveSoft, borderRadius: 8, marginBottom: 10, border: `1px solid ${C.olive}44` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.oliveDeep } }, "10\u201312 \u043C\u0438\u043D \xB7 \u0420\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430 \u0432 \u043A\u043E\u043D\u0446\u0435 \u2014 \u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E \u043F\u0440\u0438 \u0441\u043F\u0430\u0437\u043C\u0435!")), day.cooldown.map((ex, i) => /* @__PURE__ */ React.createElement(WCCard, { key: i, ex, clr: day.clr })), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, padding: "18px", background: C.oliveSoft, borderRadius: 13, border: `1px solid ${C.olive}55`, textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, marginBottom: 7 } }, "\u2713"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: C.text } }, "\u0422\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430!"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM, marginTop: 5, lineHeight: 1.6 } }, "\u0412\u044B\u043F\u0435\u0439 400 \u043C\u043B \u0432\u043E\u0434\u044B \xB7 \u0411\u0435\u043B\u043E\u043A + \u0443\u0433\u043B\u0435\u0432\u043E\u0434\u044B \u0432 \u0442\u0435\u0447\u0435\u043D\u0438\u0435 \u0447\u0430\u0441\u0430"))));
+  }
+  function DayPickerModal({ workoutDays, onChange, onClose }) {
+    const [sel, setSel] = useState(workoutDays);
+    const DAY_NAMES = ["\u041F\u043D", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041F\u0442", "\u0421\u0431", "\u0412\u0441"];
+    const toggle = (d) => {
+      if (sel.includes(d)) {
+        if (sel.length > 1) setSel(sel.filter((x) => x !== d));
+      } else if (sel.length < 3) setSel([...sel, d].sort());
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(42,36,24,.5)", zIndex: 100, display: "flex", alignItems: "flex-end", justifyContent: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: "16px 16px 0 0", padding: "20px 18px 36px", width: "100%", maxWidth: 430, boxSizing: "border-box" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 5 } }, "\u0412\u044B\u0431\u0435\u0440\u0438 \u0434\u043D\u0438 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043E\u043A"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM, marginBottom: 16 } }, "\u0412\u044B\u0431\u0435\u0440\u0438 \u0434\u043E 3 \u0434\u043D\u0435\u0439 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E. \u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u0430\u0434\u0430\u043F\u0442\u0438\u0440\u0443\u0435\u0442\u0441\u044F."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 18 } }, DAY_NAMES.map((name, i) => {
+      const isSel = sel.includes(i);
+      return /* @__PURE__ */ React.createElement("button", { key: i, onClick: () => toggle(i), style: { flex: "0 0 calc(25% - 6px)", padding: "12px 4px", borderRadius: 10, border: `2px solid ${isSel ? C.olive : C.border}`, background: isSel ? C.oliveSoft : C.bg, cursor: "pointer", fontSize: 13, fontWeight: isSel ? 700 : 500, color: isSel ? C.oliveDeep : C.textM, fontFamily: "inherit", transition: "all .15s" } }, name);
+    })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { flex: 1, padding: "11px", borderRadius: 10, background: C.bgWarm, border: "none", cursor: "pointer", fontSize: 13, color: C.textM, fontFamily: "inherit" } }, "\u041E\u0442\u043C\u0435\u043D\u0430"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      onChange(sel);
+      onClose();
+    }, style: { flex: 2, padding: "11px", borderRadius: 10, background: C.olive, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.white, fontFamily: "inherit" } }, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C"))));
+  }
+  function NutritionTab() {
+    const [subTab, setSubTab] = useState("protein");
+    const subs = [
+      { id: "protein", l: "🥩 Белок" },
+      { id: "macros", l: "🎯 КБЖУ" },
+      { id: "recipes", l: "🍳 Рецепты" },
+      { id: "calc", l: "🤖 Счётчик" },
+    ];
+    return React.createElement("div", null,
+      React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 14, background: C.bgWarm, borderRadius: 9, padding: 3 } },
+        subs.map(t => React.createElement("button", { key: t.id, onClick: () => setSubTab(t.id),
+          style: { flex: 1, padding: "7px 4px", borderRadius: 7, border: "none", cursor: "pointer",
+            background: subTab === t.id ? C.card : "transparent", color: subTab === t.id ? C.text : C.textL,
+            fontFamily: "inherit", fontSize: 11, fontWeight: subTab === t.id ? 700 : 500, transition: "all .15s" }
+        }, t.l))
+      ),
+      subTab === "protein" && React.createElement(ProteinFoodsTab, null),
+      subTab === "macros" && React.createElement(MacrosTab, null),
+      subTab === "recipes" && React.createElement(RecipesTab, null),
+      subTab === "calc" && React.createElement(CalorieCalc, null)
+    );
+  }
+
+  // ===========================================================================
+  // ProteinFoodsTab — белковые блюда для ленивых.
+  // Сгруппированы по приёму пищи. У каждого блюда: состав, граммы белка, время готовки.
+  // ===========================================================================
+  function ProteinFoodsTab() {
+    const [proteinGoal] = useLS("proteinGoal", 90);
+    const [filterMeal, setFilterMeal] = useState("all");
+    const [filterTime, setFilterTime] = useState("all");
+
+    // Каталог рецептов — простые "формулы" для набора белка
+    const foods = [
+      // ЗАВТРАК
+      { meal: "breakfast", name: "Творог + ягоды + мёд", protein: 36, time: 2, ing: "Творог 5% 200г + любые ягоды + ложка мёда" },
+      { meal: "breakfast", name: "Омлет с сыром", protein: 28, time: 7, ing: "3 яйца + 50г твёрдого сыра + помидор" },
+      { meal: "breakfast", name: "Греческий йогурт с овсянкой", protein: 25, time: 3, ing: "Греч. йогурт 250г + овсянка 30г + орехи" },
+      { meal: "breakfast", name: "Протеиновый смузи", protein: 30, time: 2, ing: "Протеин 25г + банан + молоко/растительное 200мл" },
+      { meal: "breakfast", name: "Скрэмбл с творогом", protein: 32, time: 5, ing: "3 яйца + 100г творога взбить вместе" },
+      // ОБЕД
+      { meal: "lunch", name: "Куриная грудка + крупа", protein: 35, time: 20, ing: "Куриная грудка 150г + гречка/киноа + овощи" },
+      { meal: "lunch", name: "Запечённая рыба", protein: 32, time: 25, ing: "Лосось/треска 180г запечь + овощи на пару" },
+      { meal: "lunch", name: "Тушёная говядина", protein: 30, time: 30, ing: "Говядина 130г тушить с овощами" },
+      { meal: "lunch", name: "Чечевица с яйцом", protein: 25, time: 25, ing: "Варёная чечевица 200г + 2 яйца + овощи (вегет.)" },
+      { meal: "lunch", name: "Тунец-салат с яйцом", protein: 33, time: 10, ing: "Банка тунца + 2 яйца + овощи + майонез" },
+      // ПЕРЕКУС
+      { meal: "snack", name: "Банка тунца", protein: 25, time: 1, ing: "Тунец в собственном соку 170г" },
+      { meal: "snack", name: "Протеиновый коктейль", protein: 22, time: 2, ing: "Протеин 25г + вода/молоко 250мл" },
+      { meal: "snack", name: "Творог + орехи", protein: 18, time: 1, ing: "Творог 100г + горсть миндаля/грецких" },
+      { meal: "snack", name: "3 варёных яйца", protein: 18, time: 10, ing: "Варить 8-10 мин, можно заранее на 3 дня" },
+      { meal: "snack", name: "Сыр + кешью", protein: 15, time: 1, ing: "30г сыра + 30г кешью" },
+      // УЖИН
+      { meal: "dinner", name: "Рыба + овощи на пару", protein: 30, time: 20, ing: "Рыба 150г + брокколи/спаржа/морковь" },
+      { meal: "dinner", name: "Куриные котлеты", protein: 28, time: 25, ing: "Фарш куриный 130г + лук + специи, в духовке" },
+      { meal: "dinner", name: "Омлет с тунцом", protein: 30, time: 8, ing: "3 яйца + 100г тунца + зелень" },
+      { meal: "dinner", name: "Творожная запеканка", protein: 32, time: 35, ing: "Творог 200г + 2 яйца + ваниль, в духовке" },
+      { meal: "dinner", name: "Креветки + овощи", protein: 28, time: 12, ing: "Креветки 150г + цукини + чеснок на сковороде" },
+    ];
+
+    const mealLabels = { all: "Все", breakfast: "Завтрак", lunch: "Обед", snack: "Перекус", dinner: "Ужин" };
+    const timeFilters = [
+      { id: "all", l: "Любое" },
+      { id: "fast", l: "< 5 мин", max: 5 },
+      { id: "med", l: "5—15 мин", min: 5, max: 15 },
+      { id: "slow", l: "15+ мин", min: 15 },
+    ];
+
+    const filtered = foods.filter(f => {
+      if (filterMeal !== "all" && f.meal !== filterMeal) return false;
+      const tf = timeFilters.find(t => t.id === filterTime);
+      if (tf && tf.id !== "all") {
+        if (tf.min !== undefined && f.time < tf.min) return false;
+        if (tf.max !== undefined && f.time > tf.max) return false;
+      }
+      return true;
+    }).sort((a, b) => b.protein - a.protein);
+
+    return React.createElement("div", null,
+      // Заголовок с целью
+      React.createElement("div", { style: { background: C.oliveSoft, border: `0.5px solid ${C.olive}33`, borderRadius: 10, padding: "11px 13px", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.oliveDeep, marginBottom: 4 } },
+          "🥩 Цель: ", proteinGoal, " г белка / день"
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } },
+          "Распредели на 3—4 приёма по 20—30 г. Организм не усваивает >30 г за раз — нет смысла съесть всё на ужин."
+        )
+      ),
+
+      // Фильтры
+      React.createElement("div", { style: { fontSize: 10, color: C.textM, fontWeight: 600, marginBottom: 6, letterSpacing: 0.3 } }, "ПРИЁМ ПИЩИ"),
+      React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" } },
+        Object.entries(mealLabels).map(([id, l]) => React.createElement("button", { key: id, onClick: () => setFilterMeal(id),
+          style: { padding: "6px 11px", borderRadius: 7, border: `0.5px solid ${filterMeal === id ? C.olive : C.border}`,
+            background: filterMeal === id ? C.oliveSoft : C.card, color: filterMeal === id ? C.oliveDeep : C.textM,
+            fontSize: 11, fontWeight: filterMeal === id ? 600 : 500, cursor: "pointer", fontFamily: "inherit" }
+        }, l))
+      ),
+      React.createElement("div", { style: { fontSize: 10, color: C.textM, fontWeight: 600, marginBottom: 6, letterSpacing: 0.3 } }, "ВРЕМЯ ГОТОВКИ"),
+      React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 12, flexWrap: "wrap" } },
+        timeFilters.map(t => React.createElement("button", { key: t.id, onClick: () => setFilterTime(t.id),
+          style: { padding: "6px 11px", borderRadius: 7, border: `0.5px solid ${filterTime === t.id ? C.olive : C.border}`,
+            background: filterTime === t.id ? C.oliveSoft : C.card, color: filterTime === t.id ? C.oliveDeep : C.textM,
+            fontSize: 11, fontWeight: filterTime === t.id ? 600 : 500, cursor: "pointer", fontFamily: "inherit" }
+        }, t.l))
+      ),
+
+      // Список блюд
+      filtered.length === 0
+        ? React.createElement("div", { style: { textAlign: "center", padding: "30px 20px", color: C.textM, fontSize: 12 } }, "Нет блюд под эти фильтры")
+        : filtered.map((f, i) => React.createElement("div", { key: i,
+            style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "11px 13px", marginBottom: 6 }
+          },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 4 } },
+              React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, flex: 1 } }, f.name),
+              React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", flexShrink: 0 } },
+                React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.olive } }, f.protein, " г"),
+                React.createElement("div", { style: { fontSize: 10, color: C.textL, marginTop: 1 } }, f.time, " мин")
+              )
+            ),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, f.ing)
+          ))
+    );
+  }
+  function MealTimingBlock() {
+    const [mealTimes] = useLS("mealTimes", { b: "08:00", l: "13:00", s: "16:30", d: "19:00" });
+    const meals = [
+      { k: "b", m: "\u0417\u0430\u0432\u0442\u0440\u0430\u043A", pct: "30%", n: "\u0423\u0433\u043B\u0435\u0432\u043E\u0434\u044B + \u0431\u0435\u043B\u043E\u043A" },
+      { k: "l", m: "\u041E\u0431\u0435\u0434", pct: "35%", n: "\u0421\u0430\u043C\u044B\u0439 \u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u043F\u0440\u0438\u0451\u043C" },
+      { k: "s", m: "\u041F\u0435\u0440\u0435\u043A\u0443\u0441", pct: "10%", n: "\u0411\u0435\u043B\u043E\u043A \u0438\u043B\u0438 \u0444\u0440\u0443\u043A\u0442" },
+      { k: "d", m: "\u0423\u0436\u0438\u043D", pct: "25%", n: "\u0411\u0435\u043B\u043E\u043A + \u043E\u0432\u043E\u0449\u0438" }
+    ];
+    return /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "10px 12px", boxShadow: C.shadow, border: `1px solid ${C.border}`, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text } }, "\u0420\u0435\u0436\u0438\u043C \u043F\u0438\u0442\u0430\u043D\u0438\u044F (4 \u043F\u0440\u0438\u0451\u043C\u0430)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, "\u0412\u0440\u0435\u043C\u044F \u2192 \u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u2699\uFE0F")), meals.map((it) => /* @__PURE__ */ React.createElement("div", { key: it.k, style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.olive, fontWeight: 700, width: 42, flexShrink: 0 } }, mealTimes[it.k]), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, background: C.bgWarm, borderRadius: 6, height: 6, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: "100%", width: it.pct, background: C.olive, borderRadius: 6 } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: C.text, width: 60, flexShrink: 0 } }, it.m), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL, flex: 1 } }, it.n))));
+  }
+  function MacrosTab() {
+    const [mode, setMode] = useState("training");
+    const [goalKcal, setGoalKcal] = useLS("nKcal", 1750);
+    const [goalWt, setGoalWt] = useLS("nGW", 52.5);
+    const [curWt, setCurWt] = useLS("nCW", 54);
+    const [editing, setEditing] = useState(false);
+    const [tK, setTK] = useState(String(goalKcal));
+    const [tG, setTG] = useState(String(goalWt));
+    const [tC, setTC] = useState(String(curWt));
+    const kcal = mode === "training" ? Number(goalKcal) : Math.max(1200, Number(goalKcal) - 200);
+    const macP = Math.round(kcal * 0.27 / 4);
+    const macF = Math.round(kcal * 0.3 / 9);
+    const macC = Math.round(kcal * 0.43 / 4);
+    const rem = Math.max(0, Number(curWt) - Number(goalWt)).toFixed(1);
+    const prog = Math.min(100, Math.max(0, Math.round((54 - Number(curWt)) / Math.max(0.1, 54 - Number(goalWt)) * 100)));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, "\u041C\u043E\u0439 \u0432\u0435\u0441 \u0438 \u0446\u0435\u043B\u044C"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      setEditing(!editing);
+      setTK(String(goalKcal));
+      setTG(String(goalWt));
+      setTC(String(curWt));
+    }, style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: C.textM, fontSize: 10, fontFamily: "inherit" } }, editing ? "\u2715" : "\u270F \u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C")), editing ? /* @__PURE__ */ React.createElement("div", null, [{ l: "\u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u0432\u0435\u0441 (\u043A\u0433)", v: tC, s: setTC }, { l: "\u0426\u0435\u043B\u0435\u0432\u043E\u0439 \u0432\u0435\u0441 (\u043A\u0433)", v: tG, s: setTG }, { l: "\u041A\u043A\u0430\u043B (\u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043E\u0447\u043D\u044B\u0439 \u0434\u0435\u043D\u044C)", v: tK, s: setTK }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { marginBottom: 7 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textM, marginBottom: 2 } }, it.l), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        value: it.v,
+        onChange: (e) => it.s(e.target.value),
+        step: "0.5",
+        style: { width: "100%", padding: "7px 10px", borderRadius: 7, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 14, fontFamily: "inherit", color: C.text, boxSizing: "border-box", outline: "none" }
+      }
+    ))), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          setGoalKcal(Number(tK));
+          setGoalWt(Number(tG));
+          setCurWt(Number(tC));
+          setEditing(false);
+        },
+        style: { width: "100%", padding: "9px", borderRadius: 8, background: C.olive, border: "none", color: C.white, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+      },
+      "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u2713"
+    )) : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 8 } }, [{ l: "\u0421\u0435\u0439\u0447\u0430\u0441", v: `${curWt} \u043A\u0433` }, { l: "\u0426\u0435\u043B\u044C", v: `${goalWt} \u043A\u0433` }, { l: "\u041E\u0441\u0442\u0430\u043B\u043E\u0441\u044C", v: `${rem} \u043A\u0433` }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { flex: 1, background: C.bgWarm, borderRadius: 7, padding: "7px 4px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, it.l), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: C.text } }, it.v)))), /* @__PURE__ */ React.createElement("div", { style: { background: C.bgWarm, borderRadius: 4, height: 5, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: "100%", width: `${prog}%`, background: `linear-gradient(90deg, ${C.olive}, ${C.sand})`, borderRadius: 4, transition: "width .5s" } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL, marginTop: 2, textAlign: "right" } }, prog, "% \u043A \u0446\u0435\u043B\u0438"))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, [{ k: "training", l: "\u0414\u0435\u043D\u044C \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438", e: "💪" }, { k: "rest", l: "\u0414\u0435\u043D\u044C \u043E\u0442\u0434\u044B\u0445\u0430", e: "🌙" }].map((it) => /* @__PURE__ */ React.createElement("button", { key: it.k, onClick: () => setMode(it.k), style: { flex: 1, padding: "9px 6px", borderRadius: 10, border: `1.5px solid ${mode === it.k ? C.olive : C.border}`, background: mode === it.k ? C.oliveSoft : C.card, cursor: "pointer", boxShadow: mode === it.k ? C.shadow : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17 } }, it.e), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: mode === it.k ? C.oliveDeep : C.textM, marginTop: 3 } }, it.l)))), /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "10px 12px", boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 8 } }, kcal, " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 500, color: C.textM } }, "\u043A\u043A\u0430\u043B/\u0434\u0435\u043D\u044C")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5 } }, [{ l: "\u0411\u0435\u043B\u043E\u043A", v: macP, bg: C.oliveSoft, tx: C.oliveDeep }, { l: "\u0416\u0438\u0440\u044B", v: macF, bg: C.sandSoft, tx: C.sandDeep }, { l: "\u0423\u0433\u043B\u0435\u0432\u043E\u0434\u044B", v: macC, bg: C.barkSoft, tx: C.bark }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { flex: 1, background: it.bg, borderRadius: 8, padding: "8px 5px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: it.tx } }, it.v, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u0433")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textM } }, it.l)))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL, marginTop: 8 } }, mode === "training" ? "\u0423\u0433\u043B\u0435\u0432\u043E\u0434\u044B \u0432\u044B\u0448\u0435 \u2014 \u043D\u0443\u0436\u043D\u044B \u0434\u043B\u044F \u044D\u043D\u0435\u0440\u0433\u0438\u0438 \u0438 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043C\u044B\u0448\u0446." : "\u0423\u0433\u043B\u0435\u0432\u043E\u0434\u044B \u043D\u0438\u0436\u0435, \u0431\u0435\u043B\u043E\u043A \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u043C \u2014 \u043C\u044B\u0448\u0446\u044B \u0440\u0430\u0441\u0442\u0443\u0442 \u0432 \u0434\u043D\u0438 \u043E\u0442\u0434\u044B\u0445\u0430.")), /* @__PURE__ */ React.createElement(MealTimingBlock, null));
+  }
+  function RecipesTab() {
+    const [query, setQuery] = useState("");
+    const [showChapters, setShowChapters] = useState(false);
+    const [results, setResults] = useState([]);
+    const [searched, setSearched] = useState(false);
+    const CHAPTERS = [
+      { n: "\u0413\u043B. 1", title: "\u0417\u0430\u0432\u0442\u0440\u0430\u043A\u0438 \u0438 \u043B\u0451\u0433\u043A\u0438\u0435 \u0431\u043B\u044E\u0434\u0430", count: 27, items: [
+        "\u0428\u0430\u043A\u0448\u0443\u043A\u0430",
+        "\u041E\u043C\u043B\u0435\u0442 \u0441\u043E \u0448\u043F\u0438\u043D\u0430\u0442\u043E\u043C \u0438 \u0424\u0435\u0442\u043E\u0439",
+        "\u041E\u043C\u043B\u0435\u0442 \u0441\u043E \u0448\u043F\u0438\u043D\u0430\u0442\u043E\u043C \u0438 \u041A\u0430\u043C\u0430\u043C\u0431\u0435\u0440\u043E\u043C",
+        "\u042F\u0438\u0447\u043D\u044B\u0435 \u043A\u0435\u043A\u0441\u044B \u0441 \u043E\u0432\u043E\u0449\u0430\u043C\u0438",
+        "\u042F\u0439\u0446\u043E \u043F\u0430\u0448\u043E\u0442",
+        "\u0410\u0432\u043E\u043A\u0430\u0434\u043E-\u0442\u043E\u0441\u0442 \u0441 \u044F\u0439\u0446\u043E\u043C",
+        "\u0422\u043E\u0441\u0442 \u0441 \u0430\u0440\u0430\u0445\u0438\u0441\u043E\u0432\u043E\u0439 \u043F\u0430\u0441\u0442\u043E\u0439",
+        "\u0422\u0432\u043E\u0440\u043E\u0433 \u0441\u043E \u0441\u043C\u0435\u0442\u0430\u043D\u043E\u0439 \u0438 \u044F\u0433\u043E\u0434\u0430\u043C\u0438",
+        "\u0414\u043E\u043C\u0430\u0448\u043D\u044F\u044F \u0433\u0440\u0430\u043D\u043E\u043B\u0430",
+        "\u0420\u0438\u0441\u043E\u0432\u0430\u044F \u043A\u0430\u0448\u0430 \u0441 \u043A\u043E\u043A\u043E\u0441\u043E\u0432\u044B\u043C \u043C\u043E\u043B\u043E\u043A\u043E\u043C",
+        "\u0421\u043C\u0443\u0437\u0438-\u0431\u043E\u0443\u043B \u0441 \u0433\u0440\u0430\u043D\u043E\u043B\u043E\u0439",
+        "\u0411\u0430\u043D\u0430\u043D\u043E\u0432\u044B\u0435 \u043F\u0430\u043D\u043A\u0435\u0439\u043A\u0438",
+        "\u0427\u0438\u0430 \u043F\u0443\u0434\u0438\u043D\u0433",
+        "\u0417\u0435\u043B\u0451\u043D\u044B\u0439 \u043F\u0440\u043E\u0442\u0435\u0438\u043D\u043E\u0432\u044B\u0439 \u0441\u043C\u0443\u0437\u0438",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0435 \u043F\u043E\u043C\u0438\u0434\u043E\u0440\u044B \u0441 \u0424\u0435\u0442\u043E\u0439",
+        "\u0422\u0432\u043E\u0440\u043E\u0436\u043D\u044B\u0435 \u0441\u044B\u0440\u043D\u0438\u043A\u0438",
+        "\u0422\u043E\u0441\u0442 \u0441 \u041C\u043E\u0446\u0430\u0440\u0435\u043B\u043B\u043E\u0439 \u0438 \u0430\u0432\u043E\u043A\u0430\u0434\u043E",
+        "\u041E\u0432\u0441\u044F\u043D\u0430\u044F \u043A\u0430\u0448\u0430 \u0441 \u044F\u0433\u043E\u0434\u0430\u043C\u0438",
+        "\u0417\u0435\u0440\u043D\u0451\u043D\u044B\u0439 \u0442\u0432\u043E\u0440\u043E\u0433 \u041C\u0430\u0448\u0438 \u0441 \u0441\u0435\u043C\u0435\u043D\u0430\u043C\u0438",
+        "\u0422\u0432\u043E\u0440\u043E\u0433 5% \u0441 \u0447\u0435\u0440\u043D\u043E\u0441\u043B\u0438\u0432\u043E\u043C",
+        "\u041F\u0440\u043E\u0442\u0435\u0438\u043D\u043E\u0432\u044B\u0435 \u0431\u043B\u0438\u043D\u0447\u0438\u043A\u0438",
+        "\u0411\u0435\u043B\u043A\u043E\u0432\u044B\u0435 \u0432\u0430\u0444\u043B\u0438",
+        "\u0416\u0430\u0440\u0435\u043D\u044B\u0435 \u044F\u0439\u0446\u0430 \u0441 \u043F\u0435\u0440\u0446\u0435\u043C",
+        "Overnight oats"
+      ] },
+      { n: "\u0413\u043B. 2", title: "\u0421\u0443\u043F\u044B", count: 6, items: [
+        "\u041A\u0443\u0440\u0438\u043D\u044B\u0439 \u0441\u0443\u043F \u043A\u043B\u0430\u0441\u0441\u0438\u0447\u0435\u0441\u043A\u0438\u0439",
+        "\u041A\u043E\u043A\u043E\u0441\u043E\u0432\u044B\u0439 \u043A\u0440\u0435\u043C-\u0441\u0443\u043F \u0441 \u043A\u0443\u0440\u0438\u0446\u0435\u0439",
+        "\u041A\u0440\u0435\u043C-\u0441\u0443\u043F \u0438\u0437 \u0431\u0440\u043E\u043A\u043A\u043E\u043B\u0438 \u0441 \u041F\u0430\u0440\u043C\u0435\u0437\u0430\u043D\u043E\u043C",
+        "\u0421\u0443\u043F \u0441 \u0444\u0440\u0438\u043A\u0430\u0434\u0435\u043B\u044C\u043A\u0430\u043C\u0438",
+        "\u0422\u044B\u043A\u0432\u0435\u043D\u043D\u044B\u0439 \u043A\u0440\u0435\u043C-\u0441\u0443\u043F",
+        "\u041A\u0440\u0430\u0441\u043D\u044B\u0439 \u0447\u0435\u0447\u0435\u0432\u0438\u0447\u043D\u044B\u0439 \u0441\u0443\u043F (\u041C\u0435\u0440\u0434\u0436\u0438\u043C\u0435\u043A)"
+      ] },
+      { n: "\u0413\u043B. 3", title: "\u0420\u044B\u0431\u0430", count: 12, items: [
+        "\u0422\u0443\u043D\u0435\u0446 \u0441 \u0445\u0440\u0443\u0441\u0442\u044F\u0449\u0435\u0439 \u043A\u043E\u0440\u043E\u0447\u043A\u043E\u0439",
+        "\u0422\u0443\u043D\u0435\u0446 \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439 \u0432 \u0444\u043E\u043B\u044C\u0433\u0435",
+        "\u0422\u0443\u043D\u0435\u0446 \u0432 \u043A\u043E\u043A\u043E\u0441\u043E\u0432\u043E\u043C \u0441\u043E\u0443\u0441\u0435 \u0441 \u043E\u0432\u043E\u0449\u0430\u043C\u0438",
+        "\u041B\u043E\u0441\u043E\u0441\u044C \u0441 \u043A\u0443\u043D\u0436\u0443\u0442\u043D\u043E\u0439 \u043A\u043E\u0440\u043E\u0447\u043A\u043E\u0439",
+        "\u041B\u043E\u0441\u043E\u0441\u044C \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439 \u0432 \u0444\u043E\u043B\u044C\u0433\u0435 \u0441 \u043B\u0438\u043C\u043E\u043D\u043E\u043C",
+        "\u041B\u043E\u0441\u043E\u0441\u044C \u0441 \u0438\u043C\u0431\u0438\u0440\u043D\u043E-\u0433\u043E\u0440\u0447\u0438\u0447\u043D\u044B\u043C \u043C\u0430\u0440\u0438\u043D\u0430\u0434\u043E\u043C",
+        "\u041B\u043E\u0441\u043E\u0441\u044C \u0441\u043B\u0430\u0431\u043E\u0441\u043E\u043B\u0451\u043D\u044B\u0439 \u0434\u043E\u043C\u0430\u0448\u043D\u0438\u0439",
+        "\u041F\u0430\u0441\u0442\u0430 \u0441 \u043B\u043E\u0441\u043E\u0441\u0435\u043C \u0438 \u0448\u043F\u0438\u043D\u0430\u0442\u043E\u043C",
+        "\u041E\u043B\u0430\u0434\u044C\u0438 \u0438\u0437 \u0446\u0443\u043A\u0438\u043D\u0438 \u0441 \u043B\u043E\u0441\u043E\u0441\u0435\u043C",
+        "\u041E\u043A\u0443\u043D\u044C \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439",
+        "\u041E\u043A\u0443\u043D\u044C \u0432 \u0441\u043B\u0438\u0432\u043E\u0447\u043D\u043E-\u0447\u0435\u0441\u043D\u043E\u0447\u043D\u043E\u043C \u0441\u043E\u0443\u0441\u0435",
+        "\u041E\u043A\u0443\u043D\u044C \u043F\u043E-\u0430\u0437\u0438\u0430\u0442\u0441\u043A\u0438 \u0441 \u0438\u043C\u0431\u0438\u0440\u0451\u043C",
+        "\u0421\u0430\u043B\u0430\u0442 \u041D\u0438\u0441\u0443\u0430\u0437 \u0441 \u0442\u0443\u043D\u0446\u043E\u043C"
+      ] },
+      { n: "\u0413\u043B. 4", title: "\u041C\u044F\u0441\u043E (\u0433\u043E\u0432\u044F\u0434\u0438\u043D\u0430)", count: 7, items: [
+        "\u0413\u043E\u0432\u044F\u0436\u0438\u0439 \u0433\u0443\u043B\u044F\u0448",
+        "\u0413\u043E\u0432\u044F\u0434\u0438\u043D\u0430 \u0442\u0443\u0448\u0451\u043D\u0430\u044F \u0441\u043E \u0441\u0432\u0451\u043A\u043B\u043E\u0439",
+        "\u0421\u0442\u0435\u0439\u043A \u0433\u043E\u0432\u044F\u0436\u0438\u0439",
+        "\u0413\u043E\u0432\u044F\u0436\u044C\u0438 \u043A\u043E\u0442\u043B\u0435\u0442\u044B \u0432 \u0434\u0443\u0445\u043E\u0432\u043A\u0435",
+        "\u0413\u043E\u0432\u044F\u0436\u044C\u0438 \u043A\u043E\u0442\u043B\u0435\u0442\u044B \u0441 \u0446\u0443\u043A\u0438\u043D\u0438",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u0430\u044F \u0433\u043E\u0432\u044F\u0434\u0438\u043D\u0430",
+        "\u0413\u043E\u0432\u044F\u0434\u0438\u043D\u0430 \u0432 \u0434\u0443\u0445\u043E\u0432\u043A\u0435 \u0441 \u043E\u0432\u043E\u0449\u0430\u043C\u0438"
+      ] },
+      { n: "\u0413\u043B. 5", title: "\u041A\u0443\u0440\u0438\u0446\u0430", count: 12, items: [
+        "\u041F\u0440\u044F\u043D\u0430\u044F \u043A\u0443\u0440\u0438\u043D\u0430\u044F \u0433\u0440\u0443\u0434\u043A\u0430",
+        "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u0433\u0440\u0443\u0434\u043A\u0430 \u043F\u043E-\u0430\u0437\u0438\u0430\u0442\u0441\u043A\u0438 \u0441 \u043A\u0443\u043D\u0436\u0443\u0442\u043E\u043C",
+        "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u0433\u0440\u0443\u0434\u043A\u0430 \u0432 \u043B\u0438\u043C\u043E\u043D\u043D\u043E-\u0447\u0435\u0441\u043D\u043E\u0447\u043D\u043E\u043C \u0441\u043E\u0443\u0441\u0435",
+        "\u041A\u0443\u0440\u0438\u043D\u044B\u0435 \u0431\u0451\u0434\u0440\u0430 \u0432 \u0433\u043E\u0440\u0447\u0438\u0447\u043D\u043E-\u043C\u0435\u0434\u043E\u0432\u043E\u043C \u043C\u0430\u0440\u0438\u043D\u0430\u0434\u0435",
+        "\u041A\u0443\u0440\u0438\u043D\u044B\u0435 \u0431\u0451\u0434\u0440\u0430 \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0435",
+        "\u041A\u0443\u0440\u0438\u0446\u0430 \u0432 \u0441\u043C\u0435\u0442\u0430\u043D\u043D\u043E\u043C \u0441\u043E\u0443\u0441\u0435 \u0441 \u0447\u0435\u0441\u043D\u043E\u043A\u043E\u043C",
+        "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u0433\u0440\u0443\u0434\u043A\u0430 \u0432 \u0434\u0443\u0445\u043E\u0432\u043A\u0435 \u2014 \u0437\u0430\u0433\u043E\u0442\u043E\u0432\u043A\u0430",
+        "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u043F\u0435\u0447\u0435\u043D\u044C \u0441 \u043B\u0443\u043A\u043E\u043C \u0438 \u044F\u0431\u043B\u043E\u043A\u043E\u043C",
+        "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u043F\u0435\u0447\u0435\u043D\u044C \u043F\u043E-\u0441\u0442\u0440\u043E\u0433\u0430\u043D\u043E\u0432\u0441\u043A\u0438",
+        "\u041F\u0430\u0448\u0442\u0435\u0442 \u0438\u0437 \u043A\u0443\u0440\u0438\u043D\u043E\u0439 \u043F\u0435\u0447\u0435\u043D\u0438",
+        "\u041F\u0435\u0447\u0451\u043D\u043E\u0447\u043D\u044B\u0435 \u043E\u043B\u0430\u0434\u044C\u0438"
+      ] },
+      { n: "\u0413\u043B. 6", title: "\u0421\u0430\u043B\u0430\u0442\u044B \u0438 \u043E\u0432\u043E\u0449\u0438", count: 11, items: [
+        "\u0421\u0432\u0435\u043A\u043E\u043B\u044C\u043D\u044B\u0439 \u0441\u0430\u043B\u0430\u0442 (\u0442\u0440\u0438 \u0432\u0430\u0440\u0438\u0430\u043D\u0442\u0430)",
+        "\u0422\u0451\u043F\u043B\u044B\u0439 \u0441\u0430\u043B\u0430\u0442 \u0441 \u043D\u0443\u0442\u043E\u043C \u0438 \u0424\u0435\u0442\u043E\u0439",
+        "\u0413\u0440\u0435\u0447\u0435\u0441\u043A\u0438\u0439 \u0441\u0430\u043B\u0430\u0442 \u0441 \u043A\u0443\u0440\u0438\u0446\u0435\u0439",
+        "\u0411\u0430\u043A\u043B\u0430\u0436\u0430\u043D \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439 \u0441 \u0447\u0435\u0441\u043D\u043E\u043A\u043E\u043C",
+        "\u0413\u0440\u0430\u0442\u0435\u043D \u0438\u0437 \u043E\u0432\u043E\u0449\u0435\u0439 \u0441 \u041F\u0430\u0440\u043C\u0435\u0437\u0430\u043D\u043E\u043C",
+        "\u0411\u0443\u043B\u0433\u0443\u0440 \u0441 \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u043C\u0438 \u043E\u0432\u043E\u0449\u0430\u043C\u0438 \u0438 \u043D\u0443\u0442\u043E\u043C",
+        "\u0421\u0430\u043B\u0430\u0442 \u041D\u0438\u0441\u0443\u0430\u0437",
+        "\u0417\u0435\u043B\u0451\u043D\u044B\u0439 \u0441\u0430\u043B\u0430\u0442 \u0441 \u0430\u0432\u043E\u043A\u0430\u0434\u043E \u0438 \u044F\u0439\u0446\u043E\u043C",
+        "\u0421\u0432\u0435\u043A\u043E\u043B\u044C\u043D\u044B\u0439 \u0441\u0430\u043B\u0430\u0442 \u0441 \u0424\u0435\u0442\u043E\u0439",
+        "\u0426\u0438\u043A\u043E\u0440\u0438\u0439 \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439",
+        "\u041D\u0443\u0442 \u043E\u0431\u0436\u0430\u0440\u0435\u043D\u043D\u044B\u0439 \u0441 \u043A\u0443\u0440\u043A\u0443\u043C\u043E\u0439"
+      ] },
+      { n: "\u0413\u043B. 7", title: "\u041A\u0440\u0443\u043F\u044B \u0438 \u043F\u0430\u0441\u0442\u0430", count: 8, items: [
+        "\u0413\u0440\u0435\u0447\u043D\u0435\u0432\u0430\u044F \u043A\u0430\u0448\u0430 \u0441 \u0433\u0440\u0438\u0431\u0430\u043C\u0438",
+        "\u041F\u0430\u0441\u0442\u0430 \u041C\u0430\u0440\u0438\u043D\u0430\u0440\u0430",
+        "\u0411\u0443\u0440\u044B\u0439 \u0440\u0438\u0441 \u0432\u0430\u0440\u0451\u043D\u044B\u0439",
+        "\u0413\u0440\u0435\u0447\u043A\u0430 \u0432\u0430\u0440\u0451\u043D\u0430\u044F",
+        "\u041A\u0438\u043D\u043E\u0430 \u0432\u0430\u0440\u0451\u043D\u043E\u0435",
+        "\u041F\u0448\u0451\u043D\u043D\u0430\u044F \u043A\u0430\u0448\u0430",
+        "\u0411\u0443\u043B\u0433\u0443\u0440 \u0432\u0430\u0440\u0451\u043D\u044B\u0439",
+        "\u041C\u0430\u043A\u0430\u0440\u043E\u043D\u044B al dente"
+      ] },
+      { n: "\u0413\u043B. 8", title: "\u041E\u0432\u043E\u0449\u043D\u044B\u0435 \u0433\u0430\u0440\u043D\u0438\u0440\u044B", count: 5, items: [
+        "\u0411\u0440\u043E\u043A\u043A\u043E\u043B\u0438 \u043F\u0430\u0440\u043E\u0432\u0430\u044F",
+        "\u041C\u043E\u0440\u043A\u043E\u0432\u044C \u0442\u0443\u0448\u0451\u043D\u0430\u044F \u0441 \u0447\u0435\u0441\u043D\u043E\u043A\u043E\u043C",
+        "\u0422\u0443\u0448\u0451\u043D\u044B\u0439 \u0448\u043F\u0438\u043D\u0430\u0442 \u0441 \u0447\u0435\u0441\u043D\u043E\u043A\u043E\u043C",
+        "\u041A\u0430\u0431\u0430\u0447\u043E\u043A \u0441 \u0447\u0435\u0441\u043D\u043E\u043A\u043E\u043C \u0438 \u043F\u043E\u043C\u0438\u0434\u043E\u0440\u0430\u043C\u0438",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0435 \u043E\u0432\u043E\u0449\u0438 \u2014 \u043D\u0435\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u0437\u0430\u0433\u043E\u0442\u043E\u0432\u043A\u0430"
+      ] },
+      { n: "\u0413\u043B. 9", title: "\u0412\u044B\u043F\u0435\u0447\u043A\u0430 \u0438 \u0434\u0435\u0441\u0435\u0440\u0442\u044B", count: 13, items: [
+        "\u041E\u0432\u0441\u044F\u043D\u043E\u0435 \u043F\u0435\u0447\u0435\u043D\u044C\u0435 \u0431\u0435\u0437 \u043C\u0443\u043A\u0438",
+        "\u0411\u0430\u043D\u0430\u043D\u043E\u0432\u044B\u0439 \u043A\u0435\u043A\u0441 \u0431\u0435\u0437 \u043C\u0443\u043A\u0438",
+        "\u0422\u0432\u043E\u0440\u043E\u0436\u043D\u044B\u0439 \u043F\u0438\u0440\u043E\u0433 \u0431\u0435\u0437 \u0432\u044B\u043F\u0435\u0447\u043A\u0438",
+        "\u0428\u043E\u043A\u043E\u043B\u0430\u0434\u043D\u044B\u0439 \u043C\u0443\u0441\u0441 \u0438\u0437 \u0430\u0432\u043E\u043A\u0430\u0434\u043E",
+        "\u041C\u043E\u0440\u043A\u043E\u0432\u043D\u044B\u0439 \u043F\u0438\u0440\u043E\u0433 \u0431\u0435\u0437 \u043C\u0443\u043A\u0438",
+        "\u041C\u043E\u0440\u043A\u043E\u0432\u043D\u044B\u0439 \u0442\u043E\u0440\u0442 \u0441 \u0442\u0432\u043E\u0440\u043E\u0436\u043D\u044B\u043C \u043A\u0440\u0435\u043C\u043E\u043C",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u043E\u0435 \u044F\u0431\u043B\u043E\u043A\u043E \u0441 \u043A\u043E\u0440\u0438\u0446\u0435\u0439",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u043E\u0435 \u044F\u0431\u043B\u043E\u043A\u043E \u0441 \u0411\u0440\u0438",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u043E\u0435 \u044F\u0431\u043B\u043E\u043A\u043E \u0441 \u043E\u0432\u0441\u044F\u043D\u043A\u043E\u0439",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u0430\u044F \u0433\u0440\u0443\u0448\u0430 \u0441 \u0433\u043E\u0440\u0433\u043E\u043D\u0437\u043E\u043B\u043E\u0439",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439 \u043F\u0435\u0440\u0441\u0438\u043A \u0441 \u043C\u0438\u043D\u0434\u0430\u043B\u0451\u043C",
+        "\u041E\u0432\u0441\u044F\u043D\u044B\u0435 \u043C\u0430\u0444\u0444\u0438\u043D\u044B",
+        "\u042F\u0431\u043B\u043E\u0447\u043D\u044B\u0439 \u043F\u0438\u0440\u043E\u0433 \u0431\u0435\u0437 \u043C\u0443\u043A\u0438"
+      ] },
+      { n: "\u0413\u043B. 10", title: "\u0421\u043E\u0443\u0441\u044B \u0438 \u043F\u0435\u0440\u0435\u043A\u0443\u0441\u044B", count: 8, items: [
+        "\u0413\u0443\u0430\u043A\u0430\u043C\u043E\u043B\u0435 \u0434\u043E\u043C\u0430\u0448\u043D\u0438\u0439",
+        "\u0414\u043E\u043C\u0430\u0448\u043D\u0438\u0439 \u0445\u0443\u043C\u0443\u0441",
+        "\u041C\u043E\u0440\u043A\u043E\u0432\u043D\u044B\u0435 \u043E\u043B\u0430\u0434\u044C\u0438 \u0441 \u0424\u0435\u0442\u043E\u0439",
+        "\u0417\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0439 \u0431\u0430\u0442\u0430\u0442 \u0441 \u0430\u0432\u043E\u043A\u0430\u0434\u043E \u0438 \u0424\u0435\u0442\u043E\u0439",
+        "\u042D\u043D\u0435\u0440\u0433\u0435\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0435 \u0448\u0430\u0440\u0438\u043A\u0438",
+        "\u0421\u043E\u0443\u0441 \u0438\u0437 \u0437\u0430\u043F\u0435\u0447\u0451\u043D\u043D\u044B\u0445 \u0442\u043E\u043C\u0430\u0442\u043E\u0432",
+        "\u0410\u0440\u0430\u0445\u0438\u0441\u043E\u0432\u0430\u044F \u043F\u0430\u0441\u0442\u0430 \u0434\u043E\u043C\u0430\u0448\u043D\u044F\u044F",
+        "\u0414\u043E\u043C\u0430\u0448\u043D\u0435\u0435 \u043F\u0435\u0441\u0442\u043E"
+      ] },
+      { n: "\u0413\u043B. 11", title: "\u041D\u0430\u043F\u0438\u0442\u043A\u0438 \u0438 \u0441\u043C\u0443\u0437\u0438", count: 12, items: [
+        "\u0417\u043E\u043B\u043E\u0442\u043E\u0435 \u043C\u043E\u043B\u043E\u043A\u043E (\u043A\u0443\u0440\u043A\u0443\u043C\u0430 \u043B\u0430\u0442\u0442\u0435)",
+        "\u041C\u0430\u0442\u0447\u0430 \u043B\u0430\u0442\u0442\u0435",
+        "\u0427\u0430\u0439 \u0441 \u0438\u043C\u0431\u0438\u0440\u0451\u043C \u0438 \u043B\u0438\u043C\u043E\u043D\u043E\u043C",
+        "\u041A\u043E\u043A\u043E\u0441\u043E\u0432\u044B\u0439 \u0433\u043E\u0440\u044F\u0447\u0438\u0439 \u0448\u043E\u043A\u043E\u043B\u0430\u0434",
+        "\u041A\u043B\u0443\u0431\u043D\u0438\u0447\u043D\u044B\u0439 \u0441\u043C\u0443\u0437\u0438 \u0441 \u043F\u0440\u043E\u0442\u0435\u0438\u043D\u043E\u043C",
+        "\u041E\u0433\u0443\u0440\u0435\u0447\u043D\u043E-\u043C\u044F\u0442\u043D\u0430\u044F \u0432\u043E\u0434\u0430",
+        "Bulletproof lite \u043A\u043E\u0444\u0435",
+        "\u042F\u0433\u043E\u0434\u043D\u044B\u0439 \u043A\u0435\u0444\u0438\u0440 \u0441 \u0441\u0435\u043C\u0435\u043D\u0430\u043C\u0438",
+        "\u041B\u0438\u043C\u043E\u043D\u0430\u0434 \u0441 \u0431\u0430\u0437\u0438\u043B\u0438\u043A\u043E\u043C",
+        "\u0420\u043E\u043C\u0430\u0448\u043A\u043E\u0432\u044B\u0439 \u0447\u0430\u0439 \u0441 \u043B\u0430\u0432\u0430\u043D\u0434\u043E\u0439",
+        "\u041F\u0440\u043E\u0442\u0435\u0438\u043D\u043E\u0432\u044B\u0439 \u0441\u043C\u0443\u0437\u0438",
+        "\u0421\u043C\u0443\u0437\u0438-\u043A\u0443\u0431\u0438\u043A\u0438"
+      ] },
+      { n: "\u0413\u043B. 12\u201313", title: "\u0417\u0430\u0433\u043E\u0442\u043E\u0432\u043A\u0438 \u0438 \u0445\u043B\u0435\u0431", count: 9, items: [
+        "\u0413\u043E\u0432\u044F\u0436\u0438\u0439 \u0431\u0443\u043B\u044C\u043E\u043D \u2014 \u0437\u0430\u0433\u043E\u0442\u043E\u0432\u043A\u0430",
+        "\u041C\u0430\u0440\u0438\u043D\u043E\u0432\u0430\u043D\u043D\u044B\u0439 \u043B\u0443\u043A",
+        "\u0412\u0430\u0440\u0451\u043D\u044B\u0435 \u044F\u0439\u0446\u0430 \u043D\u0430 \u043D\u0435\u0434\u0435\u043B\u044E",
+        "\u0417\u0430\u043A\u0432\u0430\u0441\u043A\u0430 \u0441 \u043D\u0443\u043B\u044F (14 \u0434\u043D\u0435\u0439)",
+        "\u0411\u0430\u0437\u043E\u0432\u044B\u0439 \u0445\u043B\u0435\u0431 \u043D\u0430 \u0437\u0430\u043A\u0432\u0430\u0441\u043A\u0435",
+        "\u0420\u0436\u0430\u043D\u043E\u0439 \u0445\u043B\u0435\u0431 \u043D\u0430 \u0437\u0430\u043A\u0432\u0430\u0441\u043A\u0435",
+        "\u041A\u0432\u0430\u0448\u0435\u043D\u0430\u044F \u043A\u0430\u043F\u0443\u0441\u0442\u0430 \u0434\u043E\u043C\u0430\u0448\u043D\u044F\u044F",
+        "\u0419\u043E\u0433\u0443\u0440\u0442 \u0434\u043E\u043C\u0430\u0448\u043D\u0438\u0439 \u0432 \u0442\u0435\u0440\u043C\u043E\u0441\u0435",
+        "\u041A\u0438\u043C\u0447\u0438 \u0431\u044B\u0441\u0442\u0440\u043E\u0435"
+      ] }
+    ];
+    const search = (q) => {
+      if (!q.trim()) return;
+      const ql = q.toLowerCase();
+      const found = [];
+      CHAPTERS.forEach((ch) => {
+        const matchingItems = ch.items.filter((item) => item.toLowerCase().includes(ql));
+        if (matchingItems.length > 0 || ch.title.toLowerCase().includes(ql)) {
+          found.push({ chapter: ch, items: matchingItems.length > 0 ? matchingItems : ch.items });
+        }
+      });
+      setResults(found);
+      setSearched(true);
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 3 } }, "📖 \u0422\u0432\u043E\u044F \u043A\u043D\u0438\u0433\u0430 \u0440\u0435\u0446\u0435\u043F\u0442\u043E\u0432"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM } }, "131+ \u0440\u0435\u0446\u0435\u043F\u0442\u043E\u0432 \xB7 \u0421\u043C\u043E\u0442\u0440\u0438 \u0433\u043B\u0430\u0432\u044B \u043D\u0438\u0436\u0435 \u0438\u043B\u0438 \u0438\u0449\u0438 \u043F\u043E \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044E")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: query,
+        onChange: (e) => setQuery(e.target.value),
+        onKeyDown: (e) => e.key === "Enter" && search(query),
+        placeholder: "\u041F\u043E\u0438\u0441\u043A \u043F\u043E \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044E...",
+        style: { flex: 1, padding: "10px 12px", borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 13, fontFamily: "inherit", color: C.text, outline: "none" }
+      }
+    ), /* @__PURE__ */ React.createElement("button", { onClick: () => search(query), style: { padding: "10px 14px", borderRadius: 9, background: C.olive, border: "none", color: C.white, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\u041D\u0430\u0439\u0442\u0438")), searched && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10 } }, results.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 12px", background: C.bgWarm, borderRadius: 9, fontSize: 12, color: C.textM } }, "\u041D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0434\u0440\u0443\u0433\u043E\u0435 \u0441\u043B\u043E\u0432\u043E.") : results.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { background: C.card, borderRadius: 11, padding: "10px 13px", marginBottom: 8, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.olive, fontWeight: 700, marginBottom: 6 } }, r.chapter.n, " \xB7 ", r.chapter.title), r.items.map((item, j) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: j,
+        style: { fontSize: 12, color: C.olive, paddingLeft: 8, marginBottom: 5, borderLeft: `2px solid ${C.olive}44`, cursor: "pointer", fontWeight: 500, lineHeight: 1.5 },
+        onClick: () => setQuery(item)
+      },
+      item,
+      " \u2192"
+    ))))), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowChapters(!showChapters), style: { width: "100%", padding: "10px 13px", borderRadius: 10, background: C.card, border: `1px solid ${C.border}`, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit", boxShadow: C.shadow, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text } }, "📚 \u0412\u0441\u0435 \u0433\u043B\u0430\u0432\u044B \u0438 \u0440\u0435\u0446\u0435\u043F\u0442\u044B"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textL } }, showChapters ? "\u25B2" : "\u25BC")), showChapters && /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 11, padding: "6px 8px", marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, CHAPTERS.map((ch, i) => /* @__PURE__ */ React.createElement(ChapterRow, { key: i, ch }))));
+  }
+  function ChapterRow({ ch }) {
+    const [open, setOpen] = useState(false);
+    return /* @__PURE__ */ React.createElement("div", { style: { borderBottom: `1px solid ${C.border}`, paddingBottom: open ? 8 : 0, marginBottom: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen(!open), style: { width: "100%", padding: "8px 6px", background: "none", border: "none", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit", textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.olive, fontWeight: 700, width: 40, flexShrink: 0 } }, ch.n), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, ch.title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL } }, "(", ch.count, ")")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL, flexShrink: 0 } }, open ? "\u25B2" : "\u25BC")), open && /* @__PURE__ */ React.createElement("div", { style: { paddingLeft: 48, paddingBottom: 4 } }, ch.items.map((item, j) => /* @__PURE__ */ React.createElement("div", { key: j, style: { fontSize: 11, color: C.textM, paddingLeft: 0, lineHeight: 1.7 } }, "\xB7 ", item))));
+  }
+  function CalorieCalc() {
+    const FOODS = [
+      { n: "\u041A\u0443\u0440\u0438\u043D\u0430\u044F \u0433\u0440\u0443\u0434\u043A\u0430", per100: { k: 155, p: 30, f: 3, c: 0 } },
+      { n: "\u041A\u0443\u0440\u0438\u043D\u044B\u0435 \u0431\u0451\u0434\u0440\u0430", per100: { k: 195, p: 22, f: 11, c: 1 } },
+      { n: "\u041B\u043E\u0441\u043E\u0441\u044C", per100: { k: 195, p: 22, f: 11, c: 0 } },
+      { n: "\u0422\u0443\u043D\u0435\u0446", per100: { k: 145, p: 24, f: 5, c: 0 } },
+      { n: "\u0422\u0440\u0435\u0441\u043A\u0430", per100: { k: 75, p: 17, f: 1, c: 0 } },
+      { n: "\u0413\u043E\u0432\u044F\u0434\u0438\u043D\u0430", per100: { k: 187, p: 29, f: 7, c: 0 } },
+      { n: "\u0424\u0430\u0440\u0448 \u0438\u043D\u0434\u0435\u0439\u043A\u0438", per100: { k: 160, p: 20, f: 9, c: 0 } },
+      { n: "\u042F\u0439\u0446\u043E", per100: { k: 155, p: 13, f: 11, c: 1 } },
+      { n: "\u0422\u0432\u043E\u0440\u043E\u0433 5%", per100: { k: 121, p: 18, f: 5, c: 3 } },
+      { n: "\u0419\u043E\u0433\u0443\u0440\u0442 \u0433\u0440\u0435\u0447\u0435\u0441\u043A\u0438\u0439", per100: { k: 70, p: 10, f: 2, c: 4 } },
+      { n: "\u0424\u0435\u0442\u0430", per100: { k: 264, p: 14, f: 21, c: 4 } },
+      { n: "\u041E\u0432\u0441\u044F\u043D\u043A\u0430", per100: { k: 370, p: 13, f: 7, c: 62 } },
+      { n: "\u0413\u0440\u0435\u0447\u043A\u0430 \u0432\u0430\u0440\u0451\u043D\u0430\u044F", per100: { k: 110, p: 4, f: 1, c: 22 } },
+      { n: "\u0420\u0438\u0441 \u0431\u0443\u0440\u044B\u0439 \u0432\u0430\u0440\u0451\u043D\u044B\u0439", per100: { k: 110, p: 3, f: 1, c: 23 } },
+      { n: "\u041F\u0430\u0441\u0442\u0430 \u0432\u0430\u0440\u0451\u043D\u0430\u044F", per100: { k: 157, p: 6, f: 1, c: 31 } },
+      { n: "\u041D\u0443\u0442", per100: { k: 100, p: 7, f: 2, c: 16 } },
+      { n: "\u0411\u0430\u0442\u0430\u0442", per100: { k: 86, p: 2, f: 0, c: 20 } },
+      { n: "\u0410\u0432\u043E\u043A\u0430\u0434\u043E", per100: { k: 160, p: 2, f: 15, c: 5 } },
+      { n: "\u0411\u0430\u043D\u0430\u043D", per100: { k: 89, p: 1, f: 0, c: 23 } },
+      { n: "\u0411\u0440\u043E\u043A\u043A\u043E\u043B\u0438", per100: { k: 35, p: 3, f: 0, c: 5 } },
+      { n: "\u0428\u043F\u0438\u043D\u0430\u0442", per100: { k: 23, p: 3, f: 0, c: 2 } },
+      { n: "\u041A\u0430\u0431\u0430\u0447\u043E\u043A", per100: { k: 24, p: 2, f: 0, c: 5 } },
+      { n: "\u041F\u043E\u043C\u0438\u0434\u043E\u0440", per100: { k: 18, p: 1, f: 0, c: 4 } },
+      { n: "\u041E\u043B\u0438\u0432\u043A\u043E\u0432\u043E\u0435 \u043C\u0430\u0441\u043B\u043E", per100: { k: 884, p: 0, f: 100, c: 0 } },
+      { n: "\u041C\u0438\u043D\u0434\u0430\u043B\u044C", per100: { k: 579, p: 21, f: 50, c: 10 } },
+      { n: "\u0421\u0435\u043C\u0435\u043D\u0430 \u0447\u0438\u0430", per100: { k: 490, p: 17, f: 31, c: 42 } },
+      { n: "\u0421\u043C\u0435\u0442\u0430\u043D\u0430 15%", per100: { k: 160, p: 3, f: 15, c: 4 } }
+    ];
+    const [query, setQuery] = useState("");
+    const [grams, setGrams] = useState("100");
+    const [result, setResult] = useState(null);
+    const [log, setLog] = useState([]);
+    const [goalKcal] = useLS("nKcal", 1750);
+    const doSearch = () => {
+      const q = query.toLowerCase().trim();
+      if (!q) return;
+      const found = FOODS.find((f) => f.n.toLowerCase().includes(q));
+      if (found) {
+        const g = parseFloat(grams) || 100, m = g / 100;
+        setResult({ name: found.n, grams: g, k: Math.round(found.per100.k * m), p: Math.round(found.per100.p * m * 10) / 10, f: Math.round(found.per100.f * m * 10) / 10, c: Math.round(found.per100.c * m * 10) / 10 });
+      } else setResult({ name: query, notFound: true });
+    };
+    const addLog = () => {
+      if (result && !result.notFound) {
+        setLog((l) => [...l, result]);
+        setResult(null);
+        setQuery("");
+        setGrams("100");
+      }
+    };
+    const tot = log.reduce((a, i) => ({ k: a.k + i.k, p: a.p + i.p, f: a.f + i.f, c: a.c + i.c }), { k: 0, p: 0, f: 0, c: 0 });
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, "🔢 \u0421\u0447\u0451\u0442\u0447\u0438\u043A \u041A\u0411\u0416\u0423"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "\u0412\u0432\u0435\u0434\u0438 \u043F\u0440\u043E\u0434\u0443\u043A\u0442 \u0438 \u0433\u0440\u0430\u043C\u043C\u044B \u2014 \u0434\u043E\u0431\u0430\u0432\u044C \u0432 \u0434\u043D\u0435\u0432\u043D\u0438\u043A \u0434\u043D\u044F.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("input", { value: query, onChange: (e) => setQuery(e.target.value), onKeyDown: (e) => e.key === "Enter" && doSearch(), placeholder: "\u041F\u0440\u043E\u0434\u0443\u043A\u0442 (\u043A\u0443\u0440\u0438\u0446\u0430, \u044F\u0439\u0446\u043E...)", style: { flex: 2, padding: "9px 11px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 13, fontFamily: "inherit", color: C.text, outline: "none" } }), /* @__PURE__ */ React.createElement("input", { value: grams, onChange: (e) => setGrams(e.target.value), type: "number", placeholder: "100", style: { width: 56, padding: "9px 8px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.bg, fontSize: 13, fontFamily: "inherit", color: C.text, outline: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.textL } }, "\u0433"), /* @__PURE__ */ React.createElement("button", { onClick: doSearch, style: { padding: "9px 12px", borderRadius: 8, background: C.olive, border: "none", color: C.white, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "\u2192")), result && /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "11px 13px", marginBottom: 8, border: `1.5px solid ${result.notFound ? C.border : C.olive + "55"}`, boxShadow: C.shadow } }, result.notFound ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM } }, "\xAB", result.name, "\xBB \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439: \u043A\u0443\u0440\u0438\u0446\u0430, \u044F\u0439\u0446\u043E, \u0433\u0440\u0435\u0447\u043A\u0430, \u0442\u0432\u043E\u0440\u043E\u0433...") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 } }, result.name, " \xB7 ", result.grams, "\u0433"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 10 } }, [{ l: "\u041A\u043A\u0430\u043B", v: result.k, c: C.text }, { l: "\u0411\u0435\u043B\u043E\u043A", v: result.p + "\u0433", c: C.olive }, { l: "\u0416\u0438\u0440\u044B", v: result.f + "\u0433", c: C.sand }, { l: "\u0423\u0433\u043B\u0435\u0432.", v: result.c + "\u0433", c: C.bark }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { flex: 1, background: C.bgWarm, borderRadius: 8, padding: "7px 4px", textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: it.c } }, it.v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, it.l)))), /* @__PURE__ */ React.createElement("button", { onClick: addLog, style: { width: "100%", padding: "8px", borderRadius: 8, background: C.oliveSoft, border: `1px solid ${C.olive}44`, color: C.oliveDeep, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "+ \u0412 \u0434\u043D\u0435\u0432\u043D\u0438\u043A"))), log.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "11px 13px", boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.text } }, "\u0414\u043D\u0435\u0432\u043D\u0438\u043A \u043F\u0438\u0442\u0430\u043D\u0438\u044F"), /* @__PURE__ */ React.createElement("button", { onClick: () => setLog([]), style: { background: "none", border: "none", cursor: "pointer", fontSize: 10, color: C.textL, fontFamily: "inherit" } }, "\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C")), log.map((item, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.text } }, item.name, " ", item.grams, "\u0433"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.olive, fontWeight: 700 } }, item.k, " \u043A\u043A\u0430\u043B"))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, padding: "9px", background: C.bgWarm, borderRadius: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 5 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, "\u0418\u0442\u043E\u0433\u043E: ", tot.k, " \u043A\u043A\u0430\u043B"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: tot.k > goalKcal ? C.warn : C.olive } }, tot.k > goalKcal ? `+${tot.k - Number(goalKcal)} \u0441\u0432\u0435\u0440\u0445` : `${Number(goalKcal) - tot.k} \u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C`)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, [{ l: "\u0411", v: Math.round(tot.p), c: C.olive }, { l: "\u0416", v: Math.round(tot.f), c: C.sand }, { l: "\u0423", v: Math.round(tot.c), c: C.bark }].map((it) => /* @__PURE__ */ React.createElement("div", { key: it.l, style: { flex: 1, textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: it.c } }, it.v, "\u0433"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, it.l)))))));
+  }
+  const HOME_CATS = [
+    {
+      cat: "\u0420\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430",
+      clr: C.olive,
+      clrS: C.oliveSoft,
+      urgent: true,
+      warn: "\u041F\u0440\u0438 \u0441\u043F\u0430\u0437\u043C\u0435 (\u0433\u0438\u043F\u0435\u0440\u0442\u043E\u043D\u0443\u0441\u0435) \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u044F \u041A\u0435\u0433\u0435\u043B\u044F \u043F\u0440\u043E\u0442\u0438\u0432\u043E\u043F\u043E\u043A\u0430\u0437\u0430\u043D\u044B \u0431\u0435\u0437 \u043F\u0440\u0435\u0434\u0432\u0430\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u044F. \u041D\u0430\u0447\u043D\u0438 \u0437\u0434\u0435\u0441\u044C.",
+      items: [
+        {
+          name: "\u0414\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u044B\u0445\u0430\u043D\u0438\u0435",
+          freq: "\u041A\u0430\u0436\u0434\u044B\u0439 \u0434\u0435\u043D\u044C, \u0443\u0442\u0440\u043E\u043C \u0438 \u0432\u0435\u0447\u0435\u0440\u043E\u043C",
+          dur: "5\u201310 \u043C\u0438\u043D",
+          how: "\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435, \u043D\u043E\u0433\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u044B. \u041E\u0434\u043D\u0430 \u0440\u0443\u043A\u0430 \u043D\u0430 \u0436\u0438\u0432\u043E\u0442\u0435. \u0412\u0434\u043E\u0445 \u043D\u043E\u0441\u043E\u043C \u2014 \u0436\u0438\u0432\u043E\u0442 \u043F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0442\u0441\u044F, \u0433\u0440\u0443\u0434\u044C \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F. \u0412\u044B\u0434\u043E\u0445 \u0440\u0442\u043E\u043C. \u041D\u0430 \u043A\u0430\u0436\u0434\u043E\u043C \u0432\u0434\u043E\u0445\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u044F\u0435\u0442\u0441\u044F \u0438 \u043E\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F \u0432\u043D\u0438\u0437.",
+          why: "\u0414\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430 \u0438 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E \u0440\u0430\u0431\u043E\u0442\u0430\u044E\u0442 \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u043D\u043E. \u042D\u0442\u043E \u043E\u0441\u043D\u043E\u0432\u0430 \u0441\u043D\u044F\u0442\u0438\u044F \u0441\u043F\u0430\u0437\u043C\u0430."
+        },
+        {
+          name: "Happy Baby (\u0441\u0447\u0430\u0441\u0442\u043B\u0438\u0432\u044B\u0439 \u0440\u0435\u0431\u0451\u043D\u043E\u043A)",
+          freq: "\u041A\u0430\u0436\u0434\u044B\u0439 \u0434\u0435\u043D\u044C",
+          dur: "2\u20133 \u043C\u0438\u043D",
+          how: "\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u0421\u043E\u0433\u043D\u0438 \u043D\u043E\u0433\u0438, \u0432\u043E\u0437\u044C\u043C\u0438\u0441\u044C \u0437\u0430 \u0432\u043D\u0435\u0448\u043D\u0438\u0435 \u0441\u0442\u043E\u0440\u043E\u043D\u044B \u0441\u0442\u043E\u043F. \u041A\u043E\u043B\u0435\u043D\u0438 \u0442\u044F\u043D\u0438 \u043A \u043F\u043E\u0434\u043C\u044B\u0448\u043A\u0430\u043C \u0448\u0438\u0440\u043E\u043A\u043E. \u041F\u043E\u043A\u0430\u0447\u0430\u0439\u0441\u044F. \u0420\u0430\u0441\u0441\u043B\u0430\u0431\u044C \u043F\u0440\u043E\u043C\u0435\u0436\u043D\u043E\u0441\u0442\u044C \u0438 \u0436\u0438\u0432\u043E\u0442 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E.",
+          why: "\u041B\u0443\u0447\u0448\u0430\u044F \u043F\u043E\u0437\u0430 \u0434\u043B\u044F \u043C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u043E\u0433\u043E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u044F \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430."
+        },
+        {
+          name: "\u0413\u043B\u0443\u0431\u043E\u043A\u0438\u0439 \u043F\u0440\u0438\u0441\u0435\u0434 (Malasana)",
+          freq: "\u041A\u0430\u0436\u0434\u044B\u0439 \u0434\u0435\u043D\u044C",
+          dur: "30\u201390 \u0441\u0435\u043A",
+          how: "\u0421\u0442\u043E\u043F\u044B \u0447\u0443\u0442\u044C \u0448\u0438\u0440\u0435 \u043F\u043B\u0435\u0447, \u043D\u043E\u0441\u043A\u0438 \u043D\u0430\u0440\u0443\u0436\u0443. \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438\u0441\u044C \u0432 \u0433\u043B\u0443\u0431\u043E\u043A\u0438\u0439 \u043F\u0440\u0438\u0441\u0435\u0434. \u0414\u0435\u0440\u0436\u0438\u0441\u044C \u0437\u0430 \u0441\u0442\u0443\u043B \u0438\u043B\u0438 \u0441\u0442\u0435\u043D\u0443. \u041F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u0440\u0430\u0441\u0441\u043B\u0430\u0431\u044C \u043F\u0440\u043E\u043C\u0435\u0436\u043D\u043E\u0441\u0442\u044C.",
+          why: "\u041C\u044B\u0448\u0446\u044B \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430 \u0440\u0430\u0441\u0442\u044F\u0433\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u0438 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u044E\u0442 \u0441\u043F\u0430\u0437\u043C \u043C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u0438."
+        },
+        {
+          name: "\u0411\u0430\u0431\u043E\u0447\u043A\u0430 \u043B\u0451\u0436\u0430",
+          freq: "\u041A\u0430\u0436\u0434\u044B\u0439 \u0434\u0435\u043D\u044C",
+          dur: "3 \u043C\u0438\u043D",
+          how: "\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u0421\u0442\u043E\u043F\u044B \u0441\u0432\u0435\u0434\u0438, \u043A\u043E\u043B\u0435\u043D\u0438 \u0440\u0430\u0437\u0432\u0435\u0434\u0438 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u044B. \u041D\u0435 \u0434\u0430\u0432\u043B\u0438 \u2014 \u043F\u043E\u0437\u0432\u043E\u043B\u044C \u0438\u043C \u043E\u043F\u0443\u0441\u043A\u0430\u0442\u044C\u0441\u044F. \u0420\u0430\u0441\u0441\u043B\u0430\u0431\u044C \u0436\u0438\u0432\u043E\u0442 \u0438 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E.",
+          why: "\u0420\u0430\u0441\u0442\u044F\u0433\u0438\u0432\u0430\u0435\u0442 \u043F\u0440\u0438\u0432\u043E\u0434\u044F\u0449\u0438\u0435 \u043C\u044B\u0448\u0446\u044B, \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E \u0441\u0432\u044F\u0437\u0430\u043D\u043D\u044B\u0435 \u0441\u043E \u0441\u043F\u0430\u0437\u043C\u043E\u043C \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430."
+        },
+        {
+          name: "\u0421\u0430\u043C\u043E\u043C\u0430\u0441\u0441\u0430\u0436 \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0435\u0439 \u0447\u0430\u0441\u0442\u0438 \u0431\u0451\u0434\u0435\u0440",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "5 \u043C\u0438\u043D",
+          how: "\u0421\u0438\u0434\u044F \u0438\u043B\u0438 \u043B\u0451\u0436\u0430. \u041C\u044F\u0433\u043A\u043E \u0440\u0430\u0437\u043C\u0438\u043D\u0430\u0439 \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u044E\u044E \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u044C \u0431\u0451\u0434\u0435\u0440 \u043E\u0442 \u043A\u043E\u043B\u0435\u043D\u0430 \u043A \u043F\u0430\u0445\u0443. \u0414\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0443\u043C\u0435\u0440\u0435\u043D\u043D\u043E\u0435 \u2014 \u043D\u0435 \u0434\u043E \u0431\u043E\u043B\u0438. \u041D\u0430\u0439\u0434\u0438 \u043D\u0430\u043F\u0440\u044F\u0436\u0451\u043D\u043D\u044B\u0435 \u0442\u043E\u0447\u043A\u0438, \u0443\u0434\u0435\u0440\u0436\u0438 30\u201360 \u0441\u0435\u043A.",
+          why: "\u0412\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u044F\u044F \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u044C \u0431\u0435\u0434\u0440\u0430 \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E \u0441\u0432\u044F\u0437\u0430\u043D\u0430 \u0441 \u0442\u0430\u0437\u043E\u0432\u044B\u043C \u0434\u043D\u043E\u043C."
+        }
+      ]
+    },
+    {
+      cat: "\u041A\u043E\u0440 \u0438 \u0441\u043F\u0438\u043D\u0430 \u0434\u043E\u043C\u0430",
+      clr: C.sand,
+      clrS: C.sandSoft,
+      urgent: false,
+      warn: null,
+      items: [
+        {
+          name: "Dead Bug",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "3 \xD7 8/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          how: "\u041B\u0451\u0436\u0430 \u043D\u0430 \u0441\u043F\u0438\u043D\u0435. \u0420\u0443\u043A\u0438 \u0432\u0432\u0435\u0440\u0445, \u043D\u043E\u0433\u0438 90\xB0. \u041F\u0440\u0438\u0436\u043C\u0438 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0443. \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0432\u044B\u0442\u044F\u043D\u0438 \u043F\u0440\u0430\u0432\u0443\u044E \u0440\u0443\u043A\u0443 \u0438 \u043B\u0435\u0432\u0443\u044E \u043D\u043E\u0433\u0443. \u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438 \u0432 5\u201310 \u0441\u043C \u043E\u0442 \u043F\u043E\u043B\u0430. \u0427\u0435\u0440\u0435\u0434\u0443\u0439. \u0422\u043E\u043B\u044C\u043A\u043E \u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E.",
+          why: "\u041B\u0443\u0447\u0448\u0435\u0435 \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u0435 \u0434\u043B\u044F \u0441\u0442\u0430\u0431\u0438\u043B\u0438\u0437\u0430\u0446\u0438\u0438 \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435."
+        },
+        {
+          name: "Bird Dog",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "3 \xD7 8/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          how: "\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445. \u041E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u0432\u044B\u0442\u044F\u043D\u0438 \u043F\u0440\u043E\u0442\u0438\u0432\u043E\u043F\u043E\u043B\u043E\u0436\u043D\u044B\u0435 \u0440\u0443\u043A\u0443 \u0438 \u043D\u043E\u0433\u0443. \u0421\u043F\u0438\u043D\u0430 \u2014 \u0433\u043E\u0440\u0438\u0437\u043E\u043D\u0442\u0430\u043B\u044C\u043D\u044B\u0439 \u0441\u0442\u043E\u043B. \u0417\u0430\u0434\u0435\u0440\u0436\u0438\u0441\u044C 2\u20133 \u0441\u0435\u043A.",
+          why: "\u0423\u043A\u0440\u0435\u043F\u043B\u044F\u0435\u0442 \u0433\u043B\u0443\u0431\u043E\u043A\u0438\u0435 \u043C\u044B\u0448\u0446\u044B \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430 \u2014 \u0432\u0430\u0436\u043D\u0435\u0439\u0448\u0438\u0435 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435."
+        },
+        {
+          name: "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043F\u043B\u0430\u043D\u043A\u0430 \u0441 \u043A\u043E\u043B\u0435\u043D\u0430",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "3 \xD7 25 \u0441\u0435\u043A/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          how: "\u041B\u0451\u0436\u0430 \u043D\u0430 \u0431\u043E\u043A\u0443, \u0443\u043F\u043E\u0440 \u043D\u0430 \u043F\u0440\u0435\u0434\u043F\u043B\u0435\u0447\u044C\u0435 \u0438 \u043A\u043E\u043B\u0435\u043D\u043E. \u041F\u043E\u0434\u043D\u0438\u043C\u0438 \u0442\u0430\u0437. \u0422\u0435\u043B\u043E \u043F\u0440\u044F\u043C\u0430\u044F \u043B\u0438\u043D\u0438\u044F. \u0421\u043B\u0430\u0431\u0443\u044E \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u0434\u0435\u0440\u0436\u0438 \u0434\u043E\u043B\u044C\u0448\u0435.",
+          why: "\u0423\u0441\u0442\u0440\u0430\u043D\u044F\u0435\u0442 \u043C\u044B\u0448\u0435\u0447\u043D\u044B\u0439 \u0434\u0438\u0441\u0431\u0430\u043B\u0430\u043D\u0441 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435."
+        },
+        {
+          name: "\u041A\u043E\u0448\u043A\u0430-\u043A\u043E\u0440\u043E\u0432\u0430",
+          freq: "\u041A\u0430\u0436\u0434\u043E\u0435 \u0443\u0442\u0440\u043E",
+          dur: "2\u20133 \u043C\u0438\u043D",
+          how: "\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445. \u0412\u0434\u043E\u0445 \u2014 \u0436\u0438\u0432\u043E\u0442 \u0432\u043D\u0438\u0437, \u0441\u043F\u0438\u043D\u0430 \u043F\u0440\u043E\u0433\u0438\u0431\u0430\u0435\u0442\u0441\u044F. \u0412\u044B\u0434\u043E\u0445 \u2014 \u0441\u043F\u0438\u043D\u0430 \u0432\u044B\u0433\u0438\u0431\u0430\u0435\u0442\u0441\u044F \u0432\u0432\u0435\u0440\u0445, \u043F\u043E\u0434\u0431\u043E\u0440\u043E\u0434\u043E\u043A \u043A \u0433\u0440\u0443\u0434\u0438. \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E.",
+          why: "\u0421\u043D\u0438\u043C\u0430\u0435\u0442 \u0443\u0442\u0440\u0435\u043D\u043D\u044E\u044E \u0441\u043A\u043E\u0432\u0430\u043D\u043D\u043E\u0441\u0442\u044C \u043F\u043E\u0437\u0432\u043E\u043D\u043E\u0447\u043D\u0438\u043A\u0430."
+        }
+      ]
+    },
+    {
+      cat: "\u042F\u0433\u043E\u0434\u0438\u0446\u044B \u0434\u043E\u043C\u0430",
+      clr: C.olive,
+      clrS: C.oliveSoft,
+      urgent: false,
+      warn: null,
+      items: [
+        {
+          name: "\u042F\u0433\u043E\u0434\u0438\u0447\u043D\u044B\u0439 \u043C\u043E\u0441\u0442\u0438\u043A \u0441 \u0437\u0430\u0434\u0435\u0440\u0436\u043A\u043E\u0439",
+          freq: "\u041C\u043E\u0436\u043D\u043E \u043A\u0430\u0436\u0434\u044B\u0439 \u0434\u0435\u043D\u044C",
+          dur: "3 \xD7 15",
+          how: "\u041B\u0451\u0436\u0430, \u043D\u043E\u0433\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u044B. \u041F\u043E\u0434\u043D\u044F\u0442\u044C \u0442\u0430\u0437 \u0434\u043E \u043F\u0440\u044F\u043C\u043E\u0439 \u043B\u0438\u043D\u0438\u0438. \u0417\u0430\u0434\u0435\u0440\u0436\u0430\u0442\u044C 3 \u0441\u0435\u043A, \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0441\u0436\u0438\u043C\u0430\u044F \u044F\u0433\u043E\u0434\u0438\u0446\u044B. \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043D\u0435 \u043A\u0430\u0441\u0430\u044F\u0441\u044C \u043F\u043E\u043B\u0430. \u041B\u0435\u043D\u0442\u0430 \u043D\u0430 \u0431\u0451\u0434\u0440\u0430\u0445 \u0443\u0434\u0432\u043E\u0438\u0442 \u044D\u0444\u0444\u0435\u043A\u0442.",
+          why: "\u0410\u043A\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442 \u0431\u043E\u043B\u044C\u0448\u0443\u044E \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u0443\u044E \u0431\u0435\u0437 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438 \u043D\u0430 \u043F\u043E\u044F\u0441\u043D\u0438\u0446\u0443."
+        },
+        {
+          name: "\u041F\u043E\u0436\u0430\u0440\u043D\u044B\u0439 \u0433\u0438\u0434\u0440\u0430\u043D\u0442",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "3 \xD7 15/\u0441\u0442\u043E\u0440\u043E\u043D\u0443",
+          how: "\u041D\u0430 \u0447\u0435\u0442\u0432\u0435\u0440\u0435\u043D\u044C\u043A\u0430\u0445. \u041F\u043E\u0434\u043D\u0438\u043C\u0438 \u0441\u043E\u0433\u043D\u0443\u0442\u0443\u044E \u043D\u043E\u0433\u0443 \u0432 \u0441\u0442\u043E\u0440\u043E\u043D\u0443 \u2014 \u0431\u0435\u0434\u0440\u043E \u043F\u0430\u0440\u0430\u043B\u043B\u0435\u043B\u044C\u043D\u043E \u043F\u043E\u043B\u0443. \u0422\u0430\u0437 \u043D\u0435 \u0437\u0430\u0432\u0430\u043B\u0438\u0432\u0430\u0439. \u041C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u043E\u043F\u0443\u0441\u0442\u0438.",
+          why: "\u0418\u0437\u043E\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u0430\u044F \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043D\u0430 \u0441\u0440\u0435\u0434\u043D\u044E\u044E \u044F\u0433\u043E\u0434\u0438\u0447\u043D\u0443\u044E \u2014 \u0434\u0430\u0451\u0442 \u043E\u043A\u0440\u0443\u0433\u043B\u043E\u0441\u0442\u044C."
+        },
+        {
+          name: "\u041C\u043E\u0441\u0442\u0438\u043A \u043D\u0430 \u043E\u0434\u043D\u043E\u0439 \u043D\u043E\u0433\u0435",
+          freq: "3\u20134 \u0440\u0430\u0437\u0430 \u0432 \u043D\u0435\u0434\u0435\u043B\u044E",
+          dur: "3 \xD7 10/\u043D\u043E\u0433\u0430",
+          how: "\u041A\u0430\u043A \u043C\u043E\u0441\u0442\u0438\u043A, \u043D\u043E \u043E\u0434\u043D\u0430 \u043D\u043E\u0433\u0430 \u0432\u044B\u0442\u044F\u043D\u0443\u0442\u0430 \u0432\u0432\u0435\u0440\u0445. \u0422\u0430\u0437 \u0440\u043E\u0432\u043D\u044B\u0439 \u2014 \u043D\u0435 \u043F\u0435\u0440\u0435\u043A\u0430\u0448\u0438\u0432\u0430\u0439.",
+          why: "\u0418\u0441\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \u043C\u044B\u0448\u0435\u0447\u043D\u044B\u0439 \u0434\u0438\u0441\u0431\u0430\u043B\u0430\u043D\u0441 \u043F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435."
+        }
+      ]
+    }
+  ];
+  function ActivityRing({ pct, size, strokeWidth, color, bgColor, children }) {
+    const r = (size - strokeWidth) / 2;
+    const circ = 2 * Math.PI * r;
+    const off = circ - Math.min(pct, 100) / 100 * circ;
+    return /* @__PURE__ */ React.createElement("div", { style: { position: "relative", width: size, height: size, flexShrink: 0 } },
+      /* @__PURE__ */ React.createElement("svg", { width: size, height: size, style: { transform: "rotate(-90deg)", position: "absolute", top: 0, left: 0 } },
+        /* @__PURE__ */ React.createElement("circle", { cx: size/2, cy: size/2, r, fill: "none", stroke: bgColor || color + "22", strokeWidth }),
+        /* @__PURE__ */ React.createElement("circle", { cx: size/2, cy: size/2, r, fill: "none", stroke: color, strokeWidth, strokeDasharray: circ, strokeDashoffset: off, strokeLinecap: "round", style: { transition: "stroke-dashoffset .6s cubic-bezier(.4,0,.2,1)" } })
+      ),
+      /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" } }, children)
+    );
+  }
+  function DayRing({ isWD, isToday, isDone, label, dayLabel, clr, onClick }) {
+    const size = 44;
+    const pct = isDone ? 100 : 0;
+    const ringColor = isDone ? clr : isToday && isWD ? clr : C.border;
+    const bg = isDone ? clr + "22" : isToday && isWD ? clr + "15" : C.bgWarm;
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: isWD ? "pointer" : "default" }, onClick: isWD ? onClick : undefined },
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, fontWeight: isToday ? 800 : 500, color: isToday ? clr : C.textL, letterSpacing: 0.5, textTransform: "uppercase" } }, dayLabel),
+      /* @__PURE__ */ React.createElement(ActivityRing, { pct, size, strokeWidth: isToday ? 4.5 : 3.5, color: ringColor, bgColor: bg },
+        /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" } },
+          isDone
+            ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, lineHeight: 1 } }, "✓")
+            : isWD
+              ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, lineHeight: 1 } }, label)
+              : /* @__PURE__ */ React.createElement("span", { style: { width: 4, height: 4, borderRadius: "50%", background: C.border, display: "block" } })
+        )
+      )
+    );
+  }
+    function HomeTab() {
+    const [openCat, setOpenCat] = useState(null);
+    const [openItem, setOpenItem] = useState(null);
+    return React.createElement("div", null,
+      React.createElement("div", {
+        style: { padding: "10px 13px", background: C.warnSoft, borderRadius: 10,
+          border: `0.5px solid ${C.warn}44`, marginBottom: 14 }
+      },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.warn, marginBottom: 3 } }, "При спазме тазового дна"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.6 } },
+          "Упражнения Кегеля ",
+          React.createElement("b", { style: { color: C.warn } }, "противопоказаны"),
+          " при гипертонусе без расслабления. Начни с первого раздела ниже. Желательна консультация физиотерапевта по женскому здоровью."
+        )
+      ),
+      HOME_CATS.map((cat, ci) => React.createElement("div", { key: ci, style: { marginBottom: 7 } },
+        React.createElement("button", {
+          onClick: () => setOpenCat(openCat === ci ? -1 : ci),
+          style: { width: "100%", padding: "12px 13px", borderRadius: 11,
+            background: openCat === ci ? cat.clrS : C.card,
+            border: `0.5px solid ${openCat === ci ? cat.clr + "66" : C.border}`,
+            cursor: "pointer", display: "flex", justifyContent: "space-between",
+            alignItems: "center", textAlign: "left", fontFamily: "inherit" }
+        },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, cat.cat),
+            React.createElement("div", { style: { fontSize: 10, color: cat.clr, marginTop: 2 } },
+              cat.items.length, " упражнений", cat.urgent ? " · Приоритет" : "")
+          ),
+          React.createElement("div", { style: { color: C.textL, fontSize: 12 } }, openCat === ci ? "▲" : "▼")
+        ),
+        openCat === ci && React.createElement("div", { style: { marginTop: 5 } },
+          cat.warn && React.createElement("div", {
+            style: { padding: "8px 11px", background: C.warnSoft, borderRadius: 8,
+              marginBottom: 7, border: `0.5px solid ${C.warn}33` }
+          },
+            React.createElement("div", { style: { fontSize: 11, color: C.warn, lineHeight: 1.55 } }, cat.warn)
+          ),
+          cat.items.map((item, ii) => React.createElement("div", { key: ii,
+            style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10,
+              padding: "11px 12px", marginBottom: 6 }
+          },
+            React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, item.name),
+            React.createElement("div", { style: { fontSize: 10, color: cat.clr, fontWeight: 600, marginTop: 2 } },
+              item.dur, " · ", item.freq),
+            React.createElement("button", {
+              onClick: () => setOpenItem(openItem === `${ci}-${ii}` ? null : `${ci}-${ii}`),
+              style: { marginTop: 5, background: "none", border: `0.5px solid ${C.border}`,
+                borderRadius: 6, cursor: "pointer", color: C.textM, fontSize: 10, padding: "3px 8px", fontFamily: "inherit" }
+            }, openItem === `${ci}-${ii}` ? "▲ Скрыть" : "▼ Как делать"),
+            openItem === `${ci}-${ii}` && React.createElement("div", {
+              style: { marginTop: 6, padding: "10px 11px", background: C.bgWarm, borderRadius: 8 }
+            },
+              React.createElement("div", { style: { fontSize: 11, color: C.text, lineHeight: 1.65, marginBottom: 6 } }, item.how),
+              React.createElement("div", { style: { fontSize: 11, color: C.textM, paddingLeft: 9, borderLeft: `2px solid ${cat.clr}88` } },
+                React.createElement("b", { style: { color: cat.clr } }, "Зачем:"), " ", item.why
+              )
+            )
+          ))
+        )
+      ))
+    );
+  }
+  // ===========================================================================
+  // CycleSubTab — два связанных счётчика: цикл (28 дн от месячных) и пачка Ярины (21+7).
+  // Календарь месяца + список будущих циклов + якори в одном месте.
+  // ===========================================================================
+  function CycleSubTab({ cycleAnchor: extAnchor, packAnchor: extPack }) {
+    const [packAnchor, setPackAnchor] = useLS("packAnchorV2", defaultPackAnchor());
+    // На Ярине цикл не независим — всё считаем от пачки (единый источник правды).
+    const cycleAnchor = packAnchor;
+    const [periodOverrides, setPeriodOverrides] = useLS("periodOverridesV1", {});
+    const [editing, setEditing] = useState(false);
+    const [editCycleNum, setEditCycleNum] = useState(null);
+    const [editDate, setEditDate] = useState("");
+    const [calMonth, setCalMonth] = useState(() => {
+      const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1);
+    });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPackDay = getPackDay(today, packAnchor);
+    const todayCycleDay = todayPackDay; // на Ярине день цикла = день пачки
+    const yarinaActive = isYarinaActiveToday(today, packAnchor);
+
+    // Всё считаем от пачки
+    const packAnchorDate = mkd(packAnchor);
+    const currentPackNum = Math.floor((today - packAnchorDate) / 86400000 / CYCLE_LEN) + 1;
+    const currentCycleNum = currentPackNum;
+
+    // Прогноз месячных (кровотечение отмены) — привязан к номеру ПАЧКИ.
+    const cycles = [currentPackNum, currentPackNum + 1, currentPackNum + 2, currentPackNum + 3]
+      .filter(n => n >= 1)
+      .map(n => {
+        const ov = periodOverrides[n];
+        const periodStart = ov ? mkd(ov) : getPredictedPeriodStart(n, packAnchor);
+        periodStart.setHours(0, 0, 0, 0);
+        const periodEnd = new Date(periodStart);
+        periodEnd.setDate(periodEnd.getDate() + PERIOD_LENGTH - 1);
+        return { n, periodStart, periodEnd, isOverride: !!ov, isCurrent: n === currentPackNum };
+      });
+
+    // Прогноз будущих пачек Ярины
+    const packs = [currentPackNum, currentPackNum + 1, currentPackNum + 2]
+      .filter(n => n >= 1)
+      .map(n => {
+        const first = getCycleStart(n, packAnchor);
+        const last = getLastPillOfPack(n, packAnchor);
+        const breakStart = new Date(last); breakStart.setDate(breakStart.getDate() + 1);
+        const breakEnd = new Date(first); breakEnd.setDate(breakEnd.getDate() + CYCLE_LEN - 1);
+        return { n, first, last, breakStart, breakEnd, isCurrent: n === currentPackNum };
+      });
+
+    // До следующих месячных (с учётом overrides)
+    const nextPeriodCycle = cycles.find(c => c.periodStart > today) || cycles[0];
+    const daysToNextPeriod = Math.max(0, Math.ceil((nextPeriodCycle.periodStart - today) / 86400000));
+
+    const fmt = (d) => new Date(d).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+
+    const startEdit = (n) => {
+      setEditCycleNum(n);
+      const cur = periodOverrides[n] || cycles.find(c => c.n === n).periodStart.toISOString().slice(0, 10);
+      setEditDate(cur);
+      setEditing(true);
+    };
+    const saveEdit = () => {
+      setPeriodOverrides({ ...periodOverrides, [editCycleNum]: editDate });
+      setEditing(false);
+    };
+    const clearOverride = () => {
+      const upd = { ...periodOverrides };
+      delete upd[editCycleNum];
+      setPeriodOverrides(upd);
+      setEditing(false);
+    };
+
+    // КАЛЕНДАРЬ МЕСЯЦА
+    const renderCalendar = () => {
+      const year = calMonth.getFullYear();
+      const month = calMonth.getMonth();
+      const monthName = calMonth.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+      const startDow = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1;
+      const daysInMonth = lastDay.getDate();
+
+      // Сетка 6 недель × 7 дней = 42 ячейки
+      const cells = [];
+      for (let i = 0; i < startDow; i++) cells.push(null);
+      for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+      while (cells.length < 42) cells.push(null);
+
+      const prevMonth = () => setCalMonth(new Date(year, month - 1, 1));
+      const nextMonth = () => setCalMonth(new Date(year, month + 1, 1));
+
+      return React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px", marginBottom: 12 } },
+        // Шапка месяца
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          React.createElement("button", { onClick: prevMonth,
+            style: { background: "none", border: "none", fontSize: 18, color: C.textM, cursor: "pointer", padding: "0 8px", fontFamily: "inherit" }
+          }, "‹"),
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, textTransform: "capitalize" } }, monthName),
+          React.createElement("button", { onClick: nextMonth,
+            style: { background: "none", border: "none", fontSize: 18, color: C.textM, cursor: "pointer", padding: "0 8px", fontFamily: "inherit" }
+          }, "›")
+        ),
+        // Заголовки дней недели
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 } },
+          ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"].map((d, i) => React.createElement("div", { key: i,
+            style: { fontSize: 9, color: C.textL, textAlign: "center", padding: "2px 0" }
+          }, d))
+        ),
+        // Дни
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 } },
+          cells.map((d, i) => {
+            if (!d) return React.createElement("div", { key: i, style: { aspectRatio: "1" } });
+            d.setHours(0, 0, 0, 0);
+            const isToday = d.getTime() === today.getTime();
+            const periodDay = getPeriodDay(d, cycleAnchor, periodOverrides);
+            // Для пачки: показываем расписание ТОЛЬКО с даты начала пачки и позже.
+            // До packAnchor мы не знаем что там была за пачка — не красим.
+            const packAnchorDate = mkd(packAnchor);
+            const inPackEra = d >= packAnchorDate;
+            const packDay = inPackEra ? getPackDay(d, packAnchor) : 0;
+            const isYarinaDay = inPackEra && packDay >= 1 && packDay <= ACTIVE_PILLS;
+            const isYarinaBreak = inPackEra && packDay > ACTIVE_PILLS;
+            // Цвет фона ячейки — приоритет: месячные > пачка > перерыв
+            let bg = "transparent", fg = C.text, fw = 400;
+            if (periodDay >= 1 && periodDay <= PERIOD_LENGTH) {
+              bg = "#D45D7A"; fg = "#fff"; fw = 700;
+            } else if (isYarinaDay) {
+              bg = "#E5E3FA"; fg = "#534AB7"; fw = 500;
+            } else if (isYarinaBreak) {
+              bg = "#FFF4D6"; fg = "#9C7A1E"; fw = 500;
+            }
+            const border = isToday ? `2px solid ${C.olive}` : "0.5px solid transparent";
+            return React.createElement("div", { key: i,
+              style: { aspectRatio: "1", background: bg, border, borderRadius: 6,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 11, color: fg, fontWeight: isToday ? 700 : fw }
+            }, d.getDate());
+          })
+        ),
+        // Легенда
+        React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px 14px", marginTop: 10, fontSize: 10, color: C.textM } },
+          [
+            { c: "#E5E3FA", l: "Таблетка пачки" },
+            { c: "#FFF4D6", l: "Перерыв Ярины" },
+            { c: "#D45D7A", l: "Месячные" },
+          ].map((it, i) => React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 5 } },
+            React.createElement("div", { style: { width: 10, height: 10, background: it.c, borderRadius: 3 } }),
+            React.createElement("span", null, it.l)
+          ))
+        )
+      );
+    };
+
+    return React.createElement("div", null,
+      // Главная карточка — текущее состояние
+      React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "13px 14px", marginBottom: 10, border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "Цикл и Ярина"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } },
+              "Цикл = 28 дн · Пачка = 21 + 7"
+            )
+          )
+        ),
+        // Два счётчика
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 } },
+          // Месячные (кровотечение отмены) — статус
+          React.createElement("div", { style: { background: C.pinkSoft, borderRadius: 9, padding: "10px 11px", border: `0.5px solid ${C.pink}33` } },
+            React.createElement("div", { style: { fontSize: 10, color: C.pink, fontWeight: 600, letterSpacing: 0.3 } }, "МЕСЯЧНЫЕ"),
+            (() => {
+              const pd = getPeriodDay(today, packAnchor, periodOverrides);
+              return pd >= 1
+                ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: C.pink, marginTop: 2, lineHeight: 1 } }, "День ", pd),
+                    React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 4 } }, "идут сейчас"))
+                : React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: C.pink, marginTop: 2, lineHeight: 1 } }, daysToNextPeriod),
+                    React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 4 } }, daysToNextPeriod === 1 ? "день до них" : "дней до них"));
+            })()
+          ),
+          // Пачка
+          React.createElement("div", { style: { background: "#F2F0FE", borderRadius: 9, padding: "10px 11px", border: `0.5px solid #534AB733` } },
+            React.createElement("div", { style: { fontSize: 10, color: "#534AB7", fontWeight: 600, letterSpacing: 0.3 } },
+              yarinaActive ? "ТАБЛЕТКА" : "ПЕРЕРЫВ"),
+            React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#534AB7", marginTop: 2, lineHeight: 1 } },
+              yarinaActive ? todayPackDay : (todayPackDay - ACTIVE_PILLS)),
+            React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 4 } },
+              yarinaActive ? "из 21" : "из 7")
+          )
+        ),
+        // До следующих месячных
+        React.createElement("div", { style: { padding: "8px 10px", background: C.bgWarm, borderRadius: 8, fontSize: 11, color: C.text, lineHeight: 1.5 } },
+          "🌸 До следующих месячных: ",
+          React.createElement("b", { style: { color: C.pink } }, daysToNextPeriod, " ", daysToNextPeriod === 1 ? "день" : daysToNextPeriod < 5 ? "дня" : "дней"),
+          " · ", fmt(nextPeriodCycle.periodStart)
+        )
+      ),
+
+      // Календарь месяца
+      renderCalendar(),
+
+      // Прогноз будущих месячных
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, marginBottom: 7, letterSpacing: 0.3, textTransform: "uppercase" } }, "Прогноз месячных"),
+      cycles.map(c => React.createElement("div", { key: c.n,
+        style: { background: c.isCurrent ? C.oliveSoft : C.card, border: `0.5px solid ${c.isCurrent ? C.olive : C.border}`,
+          borderRadius: 10, padding: "10px 13px", marginBottom: 6 }
+      },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 2 } },
+              c.isCurrent ? "Текущий цикл" : `Цикл ${c.n}`,
+              c.isOverride && React.createElement("span", { style: { color: C.info, fontStyle: "italic", marginLeft: 5 } }, "(уточнено)")
+            ),
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.pink } },
+              fmt(c.periodStart), " — ", fmt(c.periodEnd)
+            )
+          ),
+          React.createElement("button", { onClick: () => startEdit(c.n),
+            style: { background: "none", border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "4px 9px",
+              fontSize: 10, color: C.textM, cursor: "pointer", fontFamily: "inherit" }
+          }, "Уточнить")
+        )
+      )),
+
+      // Пачки Ярины
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, marginBottom: 7, marginTop: 14, letterSpacing: 0.3, textTransform: "uppercase" } }, "Пачки Ярины"),
+      packs.map(p => React.createElement("div", { key: p.n,
+        style: { background: p.isCurrent ? "#F2F0FE" : C.card, border: `0.5px solid ${p.isCurrent ? "#534AB7" : C.border}`,
+          borderRadius: 10, padding: "10px 13px", marginBottom: 6 }
+      },
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 2 } },
+          p.isCurrent ? "Текущая пачка" : `Пачка ${p.n}`
+        ),
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 500, color: C.text } },
+          "Таблетки: ", fmt(p.first), " — ", fmt(p.last)
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 2 } },
+          "Перерыв: ", fmt(p.breakStart), " — ", fmt(p.breakEnd)
+        )
+      )),
+
+      // Якорь (одна дата — первая таблетка пачки)
+      React.createElement("div", { style: { background: C.bgWarm, borderRadius: 10, padding: "11px 13px", marginTop: 14 } },
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 6 } }, "Первая таблетка текущей пачки Ярины"),
+        React.createElement("input", { type: "date", value: packAnchor, onChange: e => setPackAnchor(e.target.value),
+          "aria-label": "Дата первой таблетки текущей пачки Ярины",
+          style: { width: "100%", padding: "8px 10px", borderRadius: 8, border: `0.5px solid ${C.border}`,
+            background: C.card, fontSize: 13, fontFamily: "inherit", color: C.text,
+            minWidth: 0, boxSizing: "border-box", outline: "none" }
+        }),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 8, lineHeight: 1.5 } },
+          "На Ярине месячные — это кровотечение отмены в 7-дневный перерыв. Приложение само рассчитывает их от даты пачки (≈через 2 дня после последней таблетки). Если фактически началось в другой день — нажми «Уточнить» у нужного месяца.")
+      ),
+
+      // Модалка редактирования
+      editing && React.createElement("div", {
+        style: { position: "fixed", inset: 0, background: "rgba(46,36,24,0.55)", zIndex: 200,
+          display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 16 },
+        onClick: () => setEditing(false)
+      },
+        React.createElement("div", { onClick: e => e.stopPropagation(),
+          style: { background: C.card, borderRadius: 14, padding: 18, width: "100%", maxWidth: 380 }
+        },
+          React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 6 } }, "Уточнить дату месячных"),
+          React.createElement("div", { style: { fontSize: 12, color: C.textM, marginBottom: 14, lineHeight: 1.5 } },
+            "Когда фактически начались (или ожидаются) месячные в цикле ", editCycleNum, "?"
+          ),
+          React.createElement("input", { type: "date", value: editDate, onChange: e => setEditDate(e.target.value),
+            style: { width: "100%", padding: "11px 13px", borderRadius: 10, border: `0.5px solid ${C.border}`,
+              fontSize: 14, fontFamily: "inherit", background: C.bg,
+              minWidth: 0, boxSizing: "border-box", outline: "none", color: C.text, marginBottom: 14 }
+          }),
+          React.createElement("div", { style: { display: "flex", gap: 8 } },
+            React.createElement("button", { onClick: () => setEditing(false),
+              style: { flex: 1, padding: "11px", borderRadius: 9, background: C.bgWarm, border: `0.5px solid ${C.border}`,
+                color: C.textM, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }
+            }, "Отмена"),
+            periodOverrides[editCycleNum] && React.createElement("button", { onClick: clearOverride,
+              style: { flex: 1, padding: "11px", borderRadius: 9, background: "none", border: `0.5px solid ${C.warn}`,
+                color: C.warn, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }
+            }, "Сбросить"),
+            React.createElement("button", { onClick: saveEdit,
+              style: { flex: 1, padding: "11px", borderRadius: 9, background: C.olive, border: "none",
+                color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+            }, "Сохранить")
+          )
+        )
+      )
+    );
+  }
+  // ===========================================================================
+  // WalksSubTab — подвкладка «Прогулки» в Спорт. Логика собака/без собаки.
+  // ===========================================================================
+  function WalksSubTab() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dogHere = today < KEY_DATES.dogLeaveDate;
+    const walkWith = dogHere ? "с собакой" : "одной";
+
+    const days = [
+      { d: "ПН", evening: true, special: null },
+      { d: "ВТ", evening: true, special: null },
+      { d: "СР", evening: true, special: null },
+      { d: "ЧТ", evening: true, special: null },
+      { d: "ПТ", evening: true, special: null },
+      { d: "СБ", evening: true, special: "long" },
+      { d: "ВС", evening: false, special: "rest" },
+    ];
+
+    return React.createElement("div", null,
+      // Статус: собака сейчас или нет
+      React.createElement("div", {
+        style: { background: dogHere ? C.sandSoft : C.barkSoft, border: `0.5px solid ${dogHere ? C.sand : C.bark}33`,
+          borderRadius: 10, padding: "11px 13px", marginBottom: 11 }
+      },
+        React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "flex-start" } },
+          React.createElement("div", { style: { fontSize: 20 } }, dogHere ? "🐕" : "🚶"),
+          React.createElement("div", { style: { flex: 1 } },
+            React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 2 } },
+              dogHere ? "Собака дома" : "Собака у родителей"
+            ),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.55 } },
+              dogHere ? "Прогулки вечером, иногда днём. Утром не нужно." : "До конца августа гуляешь одной по желанию."
+            )
+          )
+        )
+      ),
+
+      // Будущий статус (если собака ещё здесь — показываем напоминание)
+      dogHere && React.createElement("div", {
+        style: { background: C.oliveSoft, border: `0.5px solid ${C.olive}33`, borderRadius: 10, padding: "10px 13px", marginBottom: 13 }
+      },
+        React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "flex-start" } },
+          React.createElement("div", { style: { fontSize: 14 } }, "📅"),
+          React.createElement("div", { style: { flex: 1 } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.oliveDeep, marginBottom: 2 } }, "С 27 мая — собака у родителей"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.55 } },
+              "До конца августа. Прогулки с собакой выпадают, но движение остаётся: зал, бег, прогулки одной."
+            )
+          )
+        )
+      ),
+
+      // Расписание недели
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, marginBottom: 7, letterSpacing: 0.3, textTransform: "uppercase" } }, "Эта неделя"),
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "12px 13px", marginBottom: 11 } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 3 } },
+          days.map((d, i) => React.createElement("div", { key: i, style: { flex: 1, textAlign: "center" } },
+            React.createElement("div", { style: { fontSize: 10, color: C.textM, marginBottom: 4 } }, d.d),
+            React.createElement("div", {
+              style: { height: 36, borderRadius: 6, background: d.special === "rest" ? C.bgWarm : (d.special === "long" ? C.barkSoft : C.sandSoft),
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }
+            },
+              d.special === "rest"
+                ? React.createElement("div", { style: { fontSize: 9, color: C.textL } }, "отдых")
+                : [
+                    React.createElement("div", { key: "e", style: { fontSize: 11 } }, dogHere ? "🐕" : "🚶"),
+                    React.createElement("div", { key: "l", style: { fontSize: 8, color: d.special === "long" ? C.bark : C.sandDeep, fontWeight: 600 } }, d.special === "long" ? "долгая" : "веч.")
+                  ]
+            )
+          ))
+        ),
+        React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 9, lineHeight: 1.5 } }, "Дневные прогулки — по желанию, не отмечаются. Утром не гуляем.")
+      ),
+
+      // Когда собаки не будет
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "12px 13px" } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 7 } }, "Когда собаки не будет (с 27 мая)"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.6 } },
+          "• Утром — без прогулок (как сейчас)", React.createElement("br"),
+          "• Вечером — короткая прогулка одной, по желанию", React.createElement("br"),
+          "• Суббота — длинная прогулка (как было)", React.createElement("br"),
+          "• ВС — отдых"
+        )
+      )
+    );
+  }
+
+  // ===========================================================================
+  // PelvicSubTab — курс тазового дна (даты берутся из KEY_DATES.pelvicStart/pelvicEnd).
+  // ===========================================================================
+  function PelvicSubTab() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayKey = today.toISOString().slice(0, 10);
+    const [log, setLog] = useLS("pelvicLogV1", {});
+
+    const beforeStart = today < KEY_DATES.pelvicStart;
+    const afterEnd = today > KEY_DATES.pelvicEnd;
+    const inCourse = !beforeStart && !afterEnd;
+
+    const todayDone = !!log[todayKey];
+    const toggleToday = () => setLog({ ...log, [todayKey]: !log[todayKey] });
+
+    // Считаем сколько дней сделано за курс
+    const startMs = KEY_DATES.pelvicStart.getTime();
+    const todayMs = today.getTime();
+    const daysSinceStart = Math.max(0, Math.floor((todayMs - startMs) / 86400000) + 1);
+    const totalDays = Math.floor((KEY_DATES.pelvicEnd - KEY_DATES.pelvicStart) / 86400000) + 1;
+    const doneCount = Object.values(log).filter(Boolean).length;
+
+    if (beforeStart) {
+      const startLabel = KEY_DATES.pelvicStart.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+      return React.createElement("div", null,
+        React.createElement("div", { style: { background: C.oliveSoft, border: `0.5px solid ${C.olive}44`, borderRadius: 10, padding: "13px 15px" } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.oliveDeep, marginBottom: 5 } }, "🌸 Курс стартует ", startLabel),
+          React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6 } },
+            "До ", startLabel, " курс ещё не начался. Сейчас — режим, сон, прогулки. С начала курса — 6 раз в неделю, отдых в воскресенье."
+          )
+        )
+      );
+    }
+
+    if (afterEnd) {
+      return React.createElement("div", null,
+        React.createElement("div", { style: { background: C.sandSoft, border: `0.5px solid ${C.sand}44`, borderRadius: 10, padding: "13px 15px", marginBottom: 12 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.sandDeep, marginBottom: 5 } }, "✓ Курс окончен"),
+          React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6 } },
+            "Базовые 2 месяца пройдены — ", doneCount, " дней из ~", totalDays, ". Если есть улучшения и хочется продолжать — обсуди с тем, кто вёл курс. Если всё хорошо без — оставляй ключевые упражнения раз в неделю для поддержки."
+          )
+        )
+      );
+    }
+
+    return React.createElement("div", null,
+      // Шапка — прогресс курса
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "12px 13px", marginBottom: 10 } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "Курс тазового дна"),
+          React.createElement("div", { style: { fontSize: 11, color: C.olive, fontWeight: 600 } }, "День ", daysSinceStart, " из ", totalDays)
+        ),
+        React.createElement("div", { style: { height: 6, background: C.bgWarm, borderRadius: 3, overflow: "hidden", marginBottom: 7 } },
+          React.createElement("div", { style: { height: "100%", width: Math.min(100, daysSinceStart / totalDays * 100) + "%", background: C.olive } })
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM } }, "Сделано: ", doneCount, " занятий")
+      ),
+
+      // Сегодня
+      React.createElement("div", {
+        style: { background: todayDone ? C.sandSoft : C.card, border: `0.5px solid ${todayDone ? C.sand : C.border}`,
+          borderRadius: 10, padding: "13px", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: todayDone ? C.sandDeep : C.text } }, "Сегодня"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, todayDone ? "Отлично, занятие отмечено" : "Отметь когда сделаешь")
+        ),
+        React.createElement("button", { onClick: toggleToday,
+          style: { padding: "8px 14px", borderRadius: 9, background: todayDone ? C.sand : C.olive, border: "none",
+            color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+        }, todayDone ? "✓ Сделано" : "Отметить")
+      ),
+
+      // Напоминание про возможное усиление боли
+      React.createElement("div", { style: { background: C.warnSoft, border: `0.5px solid ${C.warn}33`, borderRadius: 10, padding: "11px 13px" } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.warn, marginBottom: 5 } }, "⚠ Если боль усиливается"),
+        React.createElement("div", { style: { fontSize: 11, color: C.text, lineHeight: 1.6 } },
+          "Это значит ты перестаралась — упражнения на расслабление, а не на усилие. Можно временно снизить до 4-5 раз в неделю."
+        )
+      )
+    );
+  }
+
+  function IronSubTab() {
+    // Таблица анализов: пользователь заполняет значения "старт", "середина", "финиш"
+    const [labResults, setLabResults] = useLS("labResultsV1", {});
+    const labRows = [
+      { id: "ferritin", name: "Ферритин", unit: "мкг/л", norm: "30–100", note: "Основной маркер запасов железа" },
+      { id: "hb", name: "Гемоглобин", unit: "г/л", norm: "120–155", note: "Падает позже ферритина" },
+      { id: "iron", name: "Сыв. железо", unit: "мкмоль/л", norm: "7–29", note: "Текущий уровень железа" },
+      { id: "tibc", name: "ОЖСС / Трансферрин", unit: "г/л", norm: "2–3.6", note: "Повышен при дефиците" },
+      { id: "b12", name: "Витамин B12", unit: "пг/мл", norm: "189–785", note: "Нужен для кроветворения" },
+      { id: "folate", name: "Фолат", unit: "нг/мл", norm: ">3", note: "B9 для кроветворения" },
+      { id: "tsh", name: "ТТГ", unit: "мЕд/л", norm: "0.4–4.0", note: "Щитовидка" },
+      { id: "vitd", name: "Витамин D (25-OH)", unit: "нг/мл", norm: "30–80", note: "Норма для иммунитета и кости" },
+      { id: "zinc", name: "Цинк", unit: "мкмоль/л", norm: "10.7–22.2", note: "Только если врач назначит" },
+      { id: "alt", name: "ALT / AST", unit: "Ед/л", norm: "до 35", note: "Печёночные пробы (фон Дуксета)" },
+    ];
+    const cols = [
+      { id: "start", l: "Старт", d: "25 мая" },
+      { id: "mid", l: "Середина", d: "29 июня" },
+      { id: "end", l: "Финиш", d: "26 июля" },
+    ];
+    const setVal = (rowId, colId, val) => {
+      setLabResults({ ...labResults, [`${rowId}_${colId}`]: val });
+    };
+
+    return React.createElement("div", null,
+      // Главная таблица — динамика
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 } }, "🩸 Динамика анализов"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 12, lineHeight: 1.5 } },
+          "Заполняй по факту получения результатов. Прогресс будет видно сразу — особенно ферритин."
+        ),
+        React.createElement("div", { style: { overflowX: "auto" } },
+          React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 11 } },
+            React.createElement("thead", null,
+              React.createElement("tr", null,
+                React.createElement("th", { style: { textAlign: "left", padding: "6px 4px", color: C.textM, fontWeight: 600, borderBottom: `0.5px solid ${C.border}`, minWidth: 90 } }, "Маркер"),
+                ...cols.map(c => React.createElement("th", { key: c.id,
+                  style: { textAlign: "center", padding: "6px 4px", color: C.textM, fontWeight: 600, borderBottom: `0.5px solid ${C.border}`, minWidth: 60 }
+                },
+                  React.createElement("div", null, c.l),
+                  React.createElement("div", { style: { fontSize: 9, color: C.textL, fontWeight: 400, marginTop: 1 } }, c.d)
+                )),
+                React.createElement("th", { style: { textAlign: "left", padding: "6px 4px", color: C.textM, fontWeight: 600, borderBottom: `0.5px solid ${C.border}`, minWidth: 70 } }, "Норма")
+              )
+            ),
+            React.createElement("tbody", null,
+              labRows.map(row => React.createElement("tr", { key: row.id },
+                React.createElement("td", { style: { padding: "8px 4px", color: C.text, fontWeight: 500, borderBottom: `0.5px solid ${C.border}` } },
+                  React.createElement("div", { style: { fontSize: 12 } }, row.name),
+                  React.createElement("div", { style: { fontSize: 9, color: C.textL, marginTop: 1 } }, row.unit)
+                ),
+                ...cols.map(c => React.createElement("td", { key: c.id, style: { padding: "8px 2px", borderBottom: `0.5px solid ${C.border}` } },
+                  React.createElement("input", {
+                    type: "number", step: "0.1",
+                    value: labResults[`${row.id}_${c.id}`] || "",
+                    onChange: e => setVal(row.id, c.id, e.target.value),
+                    placeholder: "—",
+                    style: { width: "100%", padding: "5px 4px", border: `0.5px solid ${C.border}`, borderRadius: 5,
+                      fontSize: 12, fontFamily: "inherit", outline: "none", background: C.bg, color: C.text,
+                      minWidth: 0, boxSizing: "border-box", textAlign: "center" }
+                  })
+                )),
+                React.createElement("td", { style: { padding: "8px 4px", color: C.textM, fontSize: 11, borderBottom: `0.5px solid ${C.border}` } }, row.norm)
+              ))
+            )
+          )
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 8, lineHeight: 1.5 } },
+          "💡 Серединная сдача — за неделю до недели 7 (29 июня). Финальная — после плана (26 июля)."
+        )
+      ),
+
+      // Что сдавать
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 } }, "Список для анализов"),
+        labRows.map((row, i) => React.createElement("div", { key: i,
+          style: { padding: "8px 0", borderBottom: i < labRows.length - 1 ? `0.5px solid ${C.border}` : "none" }
+        },
+          React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 2 } },
+            React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, row.name),
+            React.createElement("span", { style: { fontSize: 11, color: C.textL } }, row.norm, " ", row.unit)
+          ),
+          React.createElement("div", { style: { fontSize: 10, color: C.textM } }, row.note)
+        ))
+      ),
+
+      // ⚠ КОК и ферритин
+      React.createElement("div", { style: { background: C.warnSoft, borderRadius: 10, padding: "10px 13px", marginBottom: 12, border: `0.5px solid ${C.warn}44` } },
+        React.createElement("div", { style: { fontSize: 11, color: C.warn, fontWeight: 600, marginBottom: 3 } }, "⚠ При КОК (Ярина)"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, "КОК может слегка завышать трансферрин и скрывать анемию. Делай анализы регулярно — это компенсирует.")
+      ),
+
+      // Железо в еде
+      React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 12 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 } }, "🥩 Железо в еде"),
+        React.createElement("div", { style: { display: "flex", gap: 8 } },
+          React.createElement("div", { style: { flex: 1, background: C.barkSoft, borderRadius: 9, padding: "10px 11px" } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.bark, marginBottom: 6 } }, "🥩 Животное"),
+            ["Печень говяжья", "Красное мясо", "Устрицы, сардины", "Курица", "Икра трески"].map((item, i) => React.createElement("div", { key: i, style: { fontSize: 11, color: C.textM, marginBottom: 3 } }, "• ", item))
+          ),
+          React.createElement("div", { style: { flex: 1, background: C.sandSoft, borderRadius: 9, padding: "10px 11px" } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.sandDeep, marginBottom: 6 } }, "🌿 Растительное"),
+            ["Гречка, киноа", "Чечевица, бобовые", "Орехи, тыкв. семечки", "Спирулина", "Сушёные абрикосы"].map((item, i) => React.createElement("div", { key: i, style: { fontSize: 11, color: C.textM, marginBottom: 3 } }, "• ", item))
+          )
+        )
+      ),
+
+      // Правила усвоения
+      React.createElement("div", { style: { background: C.oliveSoft, borderRadius: 12, padding: "13px 14px", border: `0.5px solid ${C.olive}33` } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.oliveDeep, marginBottom: 8 } }, "💡 Правила усвоения"),
+        [
+          "Мясо + витамин C усиливают усвоение в 3–4 раза",
+          "Чай / кофе за 1 час до или после еды блокирует железо",
+          "Кальций (молоко) блокирует — не совмещать в одном приёме",
+          "Добавки запивай водой или соком (не молоком)",
+        ].map((text, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 8, marginBottom: 6 } },
+          React.createElement("span", { style: { color: C.ok, fontWeight: 700, fontSize: 13, flexShrink: 0 } }, "✓"),
+          React.createElement("span", { style: { fontSize: 12, color: C.text, lineHeight: 1.5 } }, text)
+        ))
+      )
+    );
+  }
+
+  function ConstipationSubTab() {
+    const plan = [
+      { day: 1, title: "\u0423\u0442\u0440\u043e: \u0441\u0442\u0430\u0440\u0442", items: ["\u0421\u0442\u0430\u043a\u0430\u043d \u0442\u0451\u043f\u043b\u043e\u0439 \u0432\u043e\u0434\u044b \u043d\u0430\u0442\u043e\u0449\u0430\u043a, \u0437\u0430 20 \u043c\u0438\u043d \u0434\u043e \u0435\u0434\u044b", "\u0417\u0430\u0432\u0442\u0440\u0430\u043a: \u043e\u0432\u0441\u044f\u043d\u043a\u0430 + 1 \u0441\u0442. \u043b. \u0447\u0435\u0440\u043d\u043e\u0441\u043b\u0438\u0432\u044b + \u043b\u044c\u043d\u044f\u043d\u043e\u0435 \u043c\u0430\u0441\u043b\u043e", "\u041d\u043e\u0440\u043c\u0430 \u0432\u043e\u0434\u044b: 30 \u043c\u043b/\u043a\u0433 \u0432\u0435\u0441\u0430 + \u0441\u0442\u0430\u043a\u0430\u043d \u043d\u0430 \u043a\u0430\u0436\u0434\u0443\u044e \u043a\u0440\u0443\u0436\u043a\u0443 \u043a\u043e\u0444\u0435", "\u0423\u0436\u0438\u043d: \u0442\u0451\u043f\u043b\u044b\u0439 \u0441\u0443\u043f + \u0442\u0443\u0448\u0451\u043d\u044b\u0435 \u043e\u0432\u043e\u0449\u0438, \u043d\u0435 \u0445\u043e\u043b\u043e\u0434\u043d\u044b\u0435 \u0431\u043b\u044e\u0434\u0430"] },
+      { day: 2, title: "\u0416\u0438\u0440\u044b \u0438 \u0434\u0432\u0438\u0436\u0435\u043d\u0438\u0435", items: ["\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0436\u0438\u0440 \u0432 \u043a\u0430\u0436\u0434\u044b\u0439 \u043f\u0440\u0438\u0451\u043c: \u0430\u0432\u043e\u043a\u0430\u0434\u043e, \u043e\u043b\u0438\u0432\u043a\u043e\u0432\u043e\u0435 \u043c\u0430\u0441\u043b\u043e, 2 \u044f\u0439\u0446\u0430 \u0432 \u0434\u0435\u043d\u044c", "\u0423\u0442\u0440\u0435\u043d\u043d\u044f\u044f \u043f\u0440\u043e\u0433\u0443\u043b\u043a\u0430 7000 \u0448\u0430\u0433\u043e\u0432 \u2014 \u043f\u0435\u0440\u0438\u0441\u0442\u0430\u043b\u044c\u0442\u0438\u043a\u0430 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442\u0441\u044f \u043e\u0442 \u0434\u0432\u0438\u0436\u0435\u043d\u0438\u044f", "\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u043f\u0430\u0443\u0437\u044b \u043a\u0430\u0436\u0434\u044b\u0435 1.5\u20132 \u0447\u0430\u0441\u0430 \u043f\u0440\u0438 \u0441\u0438\u0434\u044f\u0447\u0435\u0439 \u0440\u0430\u0431\u043e\u0442\u0435", "\u0423\u0431\u0440\u0430\u0442\u044c \u0432 \u044d\u0442\u043e\u0442 \u0434\u0435\u043d\u044c: \u0431\u0435\u043b\u044b\u0439 \u0445\u043b\u0435\u0431, \u0431\u0430\u043d\u0430\u043d\u044b, \u043e\u0442\u0432\u0430\u0440\u043d\u043e\u0439 \u0440\u0438\u0441"] },
+      { day: 3, title: "\u041a\u043b\u0435\u0442\u0447\u0430\u0442\u043a\u0430", items: ["\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c 1 \u043f\u043e\u0440\u0446\u0438\u044e \u0432\u0430\u0440\u0451\u043d\u044b\u0445 \u043e\u0432\u043e\u0449\u0435\u0439 (20-30 \u043c\u0438\u043d \u0442\u0435\u0440\u043c\u043e\u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0438)", "\u0427\u0435\u0440\u043d\u043e\u0441\u043b\u0438\u0432\u0430 2 \u0441\u0442. \u043b. \u0432 \u0434\u0435\u043d\u044c (\u0441\u043e\u0440\u0431\u0438\u0442\u043e\u043b \u043f\u0440\u0438\u0442\u044f\u0433\u0438\u0432\u0430\u0435\u0442 \u0432\u043e\u0434\u0443 \u0432 \u043a\u0438\u0448\u0435\u0447\u043d\u0438\u043a)", "\u0413\u0440\u0435\u0447\u043a\u0430 \u0432\u043c\u0435\u0441\u0442\u043e \u0431\u0435\u043b\u043e\u0433\u043e \u0440\u0438\u0441\u0430 \u0438\u043b\u0438 \u043c\u0430\u043a\u0430\u0440\u043e\u043d", "\u041d\u0435 \u043f\u0435\u0440\u0435\u0445\u043e\u0434\u0438\u0442\u044c \u0440\u0435\u0437\u043a\u043e: 20-25 \u0433 \u043a\u043b\u0435\u0442\u0447\u0430\u0442\u043a\u0438 \u0432 \u0434\u0435\u043d\u044c \u2014 \u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e"] },
+      { day: 4, title: "\u0413\u043e\u0440\u0435\u0447\u0438\u0435 \u043e\u0432\u043e\u0449\u0438", items: ["\u0420\u0443\u043a\u043a\u043e\u043b\u0430, \u0440\u0435\u0434\u0438\u0441, \u0431\u0440\u043e\u043a\u043a\u043e\u043b\u0438, \u0446\u0432\u0435\u0442\u043d\u0430\u044f \u043a\u0430\u043f\u0443\u0441\u0442\u0430 \u2014 \u0441\u0442\u0438\u043c\u0443\u043b\u044f\u0446\u0438\u044f \u0436\u0435\u043b\u0447\u0438", "\u0418\u043d\u0442\u0435\u0440\u0432\u0430\u043b \u043c\u0435\u0436\u0434\u0443 \u043f\u0440\u0438\u0451\u043c\u0430\u043c\u0438 \u043d\u0435 \u0431\u043e\u043b\u044c\u0448\u0435 5 \u0447\u0430\u0441\u043e\u0432", "\u0415\u0441\u0442\u044c \u0431\u0435\u0437 \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0430 \u0438 \u0442\u0435\u043b\u0435\u0432\u0438\u0437\u043e\u0440\u0430 \u2014 \u0432\u043d\u0438\u043c\u0430\u043d\u0438\u0435 \u043d\u0430 \u0435\u0434\u0435 \u0443\u043b\u0443\u0447\u0448\u0430\u0435\u0442 \u043f\u0435\u0440\u0435\u0432\u0430\u0440\u0438\u0432\u0430\u043d\u0438\u0435", "\u041d\u0435 \u043f\u043e\u0434\u0430\u0432\u043b\u044f\u0439 \u043f\u043e\u0437\u044b\u0432\u044b \u2014 \u0432\u0441\u0435\u0433\u0434\u0430 \u0440\u0435\u0430\u0433\u0438\u0440\u0443\u0439 \u043d\u0430 \u043d\u0438\u0445"] },
+      { day: 5, title: "\u0414\u0432\u0438\u0436\u0435\u043d\u0438\u0435 \u0438 \u043f\u043e\u0437\u0430", items: ["\u0423\u0442\u0440\u0435\u043d\u043d\u044f\u044f \u0437\u0430\u0440\u044f\u0434\u043a\u0430 5 \u043c\u0438\u043d: \u043f\u043e\u0434\u044a\u0451\u043c \u043a\u043e\u043b\u0435\u043d, \u043d\u0430\u043a\u043b\u043e\u043d\u044b \u0432\u043f\u0435\u0440\u0451\u0434, \u0442\u0432\u0438\u0441\u0442\u044b", "\u0425\u043e\u0434\u044c\u0431\u0430 > \u0441\u0438\u0434\u044f\u0447\u0430\u044f \u043f\u043e\u0437\u0438\u0446\u0438\u044f — \u043a\u0430\u0436\u0434\u044b\u0439 \u0448\u0430\u0433 \u043f\u043e\u043c\u043e\u0433\u0430\u0435\u0442", "\u041f\u043e\u0437\u0430 \u0443 \u0442\u0443\u0430\u043b\u0435\u0442\u0430: \u043d\u043e\u0433\u0438 \u043d\u0430 \u0441\u0442\u0443\u043f\u0435\u043d\u044c\u043a\u0435 (\u0443\u0433\u043e\u043b 90\u00b0) \u2014 \u043f\u0440\u0438\u0440\u043e\u0434\u043d\u0435\u0435 \u0444\u0438\u0437\u0438\u043e\u043b\u043e\u0433\u0438\u0447\u0435\u0441\u043a\u0438", "\u041c\u0430\u0441\u0441\u0430\u0436 \u0436\u0438\u0432\u043e\u0442\u0430 \u043f\u043e \u0447\u0430\u0441\u043e\u0432\u043e\u0439 \u0441\u0442\u0440\u0435\u043b\u043a\u0435 3\u20135 \u043c\u0438\u043d \u043f\u0435\u0440\u0435\u0434 \u0435\u0434\u043e\u0439"] },
+      { day: 6, title: "\u041d\u0435\u0440\u0432\u043d\u0430\u044f \u0441\u0438\u0441\u0442\u0435\u043c\u0430", items: ["2\u20133 \u043c\u0438\u043d \u0434\u0438\u0430\u0444\u0440\u0430\u0433\u043c\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0434\u044b\u0445\u0430\u043d\u0438\u044f \u043f\u0435\u0440\u0435\u0434 \u043a\u0430\u0436\u0434\u044b\u043c \u043f\u0440\u0438\u0451\u043c\u043e\u043c \u043f\u0438\u0449\u0438", "\u0415\u0434\u0438\u043c \u0431\u0435\u0437 \u0433\u0430\u0434\u0436\u0435\u0442\u043e\u0432 \u0438 \u0442\u0435\u043b\u0435\u0432\u0438\u0437\u043e\u0440\u0430 \u2014 \u0441\u0442\u0440\u0435\u0441\u0441 \u0437\u0430\u043c\u0435\u0434\u043b\u044f\u0435\u0442 \u043a\u0438\u0448\u0435\u0447\u043d\u0438\u043a", "\u0421\u043d\u0438\u0436\u0430\u0435\u043c \u0441\u0442\u0440\u0435\u0441\u0441 \u0433\u0434\u0435 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e: \u043f\u0440\u043e\u0433\u0443\u043b\u043a\u0430, \u043c\u0443\u0437\u044b\u043a\u0430, \u0441\u043e\u043d", "\u041f\u0440\u043e\u0431\u0438\u043e\u0442\u0438\u043a\u0438 (\u043a\u0435\u0444\u0438\u0440, \u043d\u0430\u0442\u0443\u0440\u0430\u043b\u044c\u043d\u044b\u0439 \u0439\u043e\u0433\u0443\u0440\u0442) \u043a\u0430\u0436\u0434\u044b\u0439 \u0434\u0435\u043d\u044c"] },
+      { day: 7, title: "\u0420\u0435\u0436\u0438\u043c \u0438 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u0438\u0435", items: ["\u0424\u0438\u043a\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u043e\u0435 \u0432\u0440\u0435\u043c\u044f \u0437\u0430\u0432\u0442\u0440\u0430\u043a\u0430 \u2014 \u043a\u0438\u0448\u0435\u0447\u043d\u0438\u043a \u0430\u043a\u0442\u0438\u0432\u043d\u0435\u0435 \u0443\u0442\u0440\u043e\u043c", "\u0423\u0442\u0440\u043e: \u043d\u0435 \u0441\u043f\u0435\u0448\u0438\u0442\u044c, \u0434\u0430\u0442\u044c \u0441\u0435\u0431\u0435 \u0432\u0440\u0435\u043c\u044f \u0432 \u0442\u0443\u0430\u043b\u0435\u0442\u0435", "\u041e\u0446\u0435\u043d\u0438 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442: \u0447\u0430\u0441\u0442\u043e\u0442\u0430, \u043a\u043e\u043d\u0441\u0438\u0441\u0442\u0435\u043d\u0446\u0438\u044f, \u043e\u0449\u0443\u0449\u0435\u043d\u0438\u044f", "\u0415\u0441\u043b\u0438 \u043d\u0435\u0442 \u0443\u043b\u0443\u0447\u0448\u0435\u043d\u0438\u044f \u0437\u0430 2 \u043d\u0435\u0434\u0435\u043b\u0438 \u2014 \u043a \u0433\u0430\u0441\u0442\u0440\u043e\u044d\u043d\u0442\u0435\u0440\u043e\u043b\u043e\u0433\u0443"] },
+    ];
+    return React.createElement("div", null,
+      React.createElement("div", { style: { background: "#D8E8D4", borderRadius: 10, padding: "10px 12px", marginBottom: 12, border: "1px solid #4A674133" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#2E4428", fontWeight: 700, marginBottom: 2 } }, "\ud83d\udca7 \u041f\u043e\u0448\u0430\u0433\u043e\u0432\u043e\u0435 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043c\u043e\u0442\u043e\u0440\u0438\u043a\u0438 \u043a\u0438\u0448\u0435\u0447\u043d\u0438\u043a\u0430"),
+        React.createElement("div", { style: { fontSize: 11, color: "#6B6560" } }, "\u041a\u0430\u0436\u0434\u044b\u0439 \u0434\u0435\u043d\u044c \u2014 \u043d\u043e\u0432\u044b\u0439 \u043d\u0430\u0432\u044b\u043a. \u0414\u0435\u043b\u0430\u0439 \u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u043e, \u043d\u0435 \u0442\u043e\u0440\u043e\u043f\u0438\u0441\u044c.")
+      ),
+      plan.map((p, pi) => React.createElement("div", { key: pi, style: { background: "#FFFFFF", borderRadius: 12, padding: "13px 14px", marginBottom: 10, border: "1px solid #DDD8CF", boxShadow: "0 1px 4px rgba(0,0,0,0.07)" } },
+        React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 8 } },
+          React.createElement("div", { style: { width: 32, height: 32, borderRadius: 8, background: "#D8E8D4", border: "1.5px solid #4A674144", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#2E4428", flexShrink: 0 } }, p.day),
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#2C2C2C", paddingTop: 6 } }, p.title)
+        ),
+        p.items.map((item, ii) => React.createElement("div", { key: ii, style: { display: "flex", gap: 8, marginBottom: 5 } },
+          React.createElement("div", { style: { width: 4, height: 4, borderRadius: "50%", background: "#4A6741", marginTop: 6, flexShrink: 0 } }),
+          React.createElement("div", { style: { fontSize: 12, color: "#6B6560", lineHeight: 1.5 } }, item)
+        ))
+      ))
+    );
+  }
+
+  // ===========================================================================
+  // SportTab — объединяет Зал, Прогулки, Бег, Дома, Тазовое дно.
+  // ===========================================================================
+  function SportTab({ workoutDays, doneCount, weekLog, markDay, DR, todayDow, selDay, setSelDay, dayCAvailable, setWorkoutDays, cycleAnchor, periodOverrides }) {
+    const [sub, setSub] = useLS("sportSubV1", "today");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const gymOpen = today >= KEY_DATES.gymStart;
+    const runOpen = today >= KEY_DATES.runStart;
+    const pelvicOpen = today >= KEY_DATES.pelvicStart;
+
+    const subs = [
+      { id: "today",  l: "📅 Сегодня" },
+      { id: "gym",    l: "🏋 Зал" },
+      { id: "pelvic", l: "🌸 Таз.дно" },
+      { id: "walks",  l: "🚶 Прогулки" },
+      { id: "run",    l: "🏃 Бег" },
+      { id: "home",   l: "🏡 Дома" },
+      { id: "settings", l: "⚙ Настройки" },
+    ];
+
+    // Карточка "Сегодня в спорте" — что по плану на этот день
+    const renderTodayCard = () => {
+      const dow = today.getDay() === 0 ? 6 : today.getDay() - 1;
+      const isTrain = gymOpen && workoutDays.includes(dow);
+      const dayLabels = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"];
+      // Учитываем дни 1-3 месячных — заменяем тренировку на прогулку (как на Сегодня)
+      const periodDay = cycleAnchor ? getPeriodDay(today, cycleAnchor, periodOverrides || {}) : 0;
+      const isLowDay = periodDay >= 1 && periodDay <= 3;
+      // Учитываем badDay из localStorage
+      let badDayActive = false;
+      try { badDayActive = JSON.parse(localStorage.getItem("badDayToday_" + new Date().toDateString()) || "false"); } catch {}
+
+      const dogHere = today < KEY_DATES.dogLeaveDate;
+
+      // Список активностей сегодня
+      const acts = [];
+      if (badDayActive) {
+        acts.push({ icon: "💛", time: "—", label: "Плохой день — режим лёгкого движения", dur: "Только прогулка, без силовой" });
+        if (dow !== 6) acts.push({ icon: dogHere ? "🐕" : "🚶", time: "20:30", label: `Прогулка ${dogHere ? "с собакой" : "одной"}`, dur: "30-40 мин" });
+      } else if (isLowDay) {
+        acts.push({ icon: "🌸", time: "—", label: `День ${periodDay} месячных — лёгкая интенсивность`, dur: "Силовая заменяется на прогулку" });
+        if (pelvicOpen && dow !== 6) acts.push({ icon: "🌸", time: "18:00", label: "Курс таз. дна", dur: "30 мин · помогает при ПМС" });
+        if (dow !== 6) acts.push({ icon: dogHere ? "🐕" : "🚶", time: "20:30", label: `Прогулка ${dogHere ? "с собакой" : "одной"}`, dur: "30-40 мин спокойно" });
+      } else if (isTrain) {
+        // Тип тренировки — как в getTodayActivity, по счётчику тренировок
+        let trainingCount = 0;
+        if (cycleAnchor) {
+          const d0 = new Date(KEY_DATES.gymStart);
+          const d1 = new Date(today); d1.setHours(0, 0, 0, 0);
+          for (let d = new Date(d0); d < d1; d.setDate(d.getDate() + 1)) {
+            const dw = d.getDay() === 0 ? 6 : d.getDay() - 1;
+            if (workoutDays.includes(dw)) {
+              const pd = getPeriodDay(d, cycleAnchor, periodOverrides || {});
+              if (pd < 1 || pd > 3) trainingCount++;
+            }
+          }
+        }
+        const types = (dayCAvailable && workoutDays.length >= 3) ? 3 : 2;
+        const dayType = trainingCount % types;
+        const dayName = dayType === 0 ? "День A (Ягодицы + Кор)"
+          : dayType === 1 ? "День B (Спина + Кор)"
+          : "День C (Ягодицы + Ноги)";
+        acts.push({ icon: "🏋", time: "18:00", label: `Зал — ${dayName}`, dur: "50 мин (10 разминка + 40 силовая)" });
+        if (pelvicOpen) acts.push({ icon: "🌸", time: "18:50", label: "Курс таз. дна в зале", dur: "30 мин (заминка после силовой)" });
+      } else {
+        if (pelvicOpen && dow !== 6) acts.push({ icon: "🌸", time: "18:00", label: "Курс таз. дна", dur: "30 мин" });
+        if (dow === 5 && runOpen) acts.push({ icon: "🏃", time: "10:00", label: "Ходьба / лёгкий бег", dur: "30 мин (в любое удобное время)" });
+        if (dow !== 6) acts.push({ icon: dogHere ? "🐕" : "🚶", time: "20:30", label: `Прогулка ${dogHere ? "с собакой" : "одной"}`, dur: "30-40 мин" });
+        if (dow === 6) acts.push({ icon: "🌙", time: "—", label: "День отдыха", dur: "Восстановление" });
+      }
+
+      return React.createElement("div", null,
+        React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 12 } },
+          React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "Сегодня · ", dayLabels[dow]),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM } }, today.toLocaleDateString("ru-RU", { day: "numeric", month: "long" }))
+          ),
+          acts.length === 0
+            ? React.createElement("div", { style: { fontSize: 12, color: C.textM, fontStyle: "italic", padding: "10px 0" } }, "Сегодня нет запланированных активностей")
+            : acts.map((a, i) => React.createElement("div", { key: i,
+                style: { display: "flex", alignItems: "center", gap: 11, padding: "9px 0",
+                  borderBottom: i < acts.length - 1 ? `0.5px solid ${C.border}` : "none" }
+              },
+                React.createElement("div", { style: { fontSize: 20 } }, a.icon),
+                React.createElement("div", { style: { flex: 1 } },
+                  React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } },
+                    React.createElement("div", { style: { fontSize: 11, color: C.olive, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, a.time),
+                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, a.label)
+                  ),
+                  React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, a.dur)
+                )
+              ))
+        ),
+
+        // Кнопки перехода в подвкладки
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, marginBottom: 7, letterSpacing: 0.3 } }, "ОТКРЫТЬ ДЕТАЛИ"),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 } },
+          [
+            { id: "gym", l: "🏋 Зал", sub: gymOpen ? "Программы тренировок" : "С 10 июня" },
+            { id: "pelvic", l: "🌸 Таз. дно", sub: pelvicOpen ? "30 мин в день" : "С " + KEY_DATES.pelvicStart.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) },
+            { id: "walks", l: "🚶 Прогулки", sub: "Расписание недели" },
+            { id: "run", l: "🏃 Бег", sub: runOpen ? "Программа ходьба→бег" : "С 15 июня" },
+          ].map(b => React.createElement("button", { key: b.id, onClick: () => setSub(b.id),
+            style: { padding: "11px 13px", borderRadius: 10, background: C.card, border: `0.5px solid ${C.border}`,
+              cursor: "pointer", textAlign: "left", fontFamily: "inherit" }
+          },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, b.l),
+            React.createElement("div", { style: { fontSize: 10, color: C.textM, marginTop: 3 } }, b.sub)
+          ))
+        )
+      );
+    };
+
+    // Настройки активности
+    const renderSettings = () => {
+      const toggleDay = (d) => {
+        const cur = workoutDays.includes(d) ? workoutDays.filter(x => x !== d) : workoutDays.length < 3 ? [...workoutDays, d].sort() : workoutDays;
+        setWorkoutDays(cur);
+      };
+      return React.createElement("div", null,
+        React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "13px 14px", marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 } }, "Дни силовых тренировок"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 10, lineHeight: 1.5 } },
+            "По умолчанию — среда + пятница. Можешь выбрать до 3 дней. С 6 июля доступен День C — добавь третий день."
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 5, flexWrap: "wrap" } },
+            DR.map((d, i) => {
+              const sel = workoutDays.includes(i);
+              return React.createElement("button", {
+                key: i, onClick: () => toggleDay(i),
+                style: { padding: "10px 13px", borderRadius: 9, border: `0.5px solid ${sel ? C.olive : C.border}`,
+                  background: sel ? C.oliveSoft : C.bg, cursor: "pointer", fontFamily: "inherit",
+                  fontSize: 13, fontWeight: sel ? 600 : 400, color: sel ? C.oliveDeep : C.textM }
+              }, d);
+            })
+          ),
+          React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 8 } },
+            "Выбрано: ", workoutDays.map(d => DR[d]).join(", ") || "нет"
+          )
+        ),
+        React.createElement("div", { style: { background: C.oliveSoft, border: `0.5px solid ${C.olive}33`, borderRadius: 10, padding: "11px 13px" } },
+          React.createElement("div", { style: { fontSize: 11, color: C.oliveDeep, lineHeight: 1.6 } },
+            "💡 По плану: ср+пт (День A в среду, День B в пятницу). С 6 июля можно добавить День C — раз в 2 недели вместо A или B, не в дополнение."
+          )
+        )
+      );
+    };
+
+    return React.createElement("div", null,
+      // Tab strip
+      React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 14, overflowX: "auto", paddingBottom: 2 } },
+        subs.map(s => React.createElement("button", { key: s.id, onClick: () => setSub(s.id),
+          style: { padding: "8px 11px", borderRadius: 8, border: `0.5px solid ${sub === s.id ? C.olive : C.border}`,
+            background: sub === s.id ? C.olive : C.card, color: sub === s.id ? "#fff" : C.textM,
+            fontSize: 11, fontWeight: sub === s.id ? 600 : 500, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }
+        }, s.l))
+      ),
+
+      sub === "today" && renderTodayCard(),
+      sub === "settings" && renderSettings(),
+      sub === "walks" && React.createElement(WalksSubTab, null),
+      sub === "pelvic" && React.createElement(PelvicSubTab, null),
+
+      // GYM — если до 10 июня, показываем предупреждение
+      sub === "gym" && !gymOpen && React.createElement("div", { style: { padding: "13px 15px", background: C.oliveSoft, border: `0.5px solid ${C.olive}44`, borderRadius: 10 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.oliveDeep, marginBottom: 5 } }, "🔒 Зал стартует 10 июня"),
+        React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6 } },
+          "До 10 июня — прогулки и курс таз. дна. Первая силовая будет в среду 10 июня — День A (Ягодицы + Кор). По плану ср + пт. Программа: 10 мин разминка + 40 мин силовая + 30 мин таз. дна = 80 мин."
+        )
+      ),
+      sub === "gym" && gymOpen && React.createElement("div", null,
+        // Кнопки A / B / C
+        React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 12 } },
+          DAYS.map((d, i) => {
+            const locked = (i === 2 && !dayCAvailable);
+            return React.createElement("button", { key: i, onClick: () => { if (!locked) setSelDay(i); }, disabled: locked,
+              style: { flex: 1, padding: "11px 4px", borderRadius: 10, border: `0.5px solid ${selDay === i ? d.clr : C.border}`,
+                background: locked ? C.bgWarm : (selDay === i ? d.clrS : C.card),
+                cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, fontFamily: "inherit" }
+            },
+              React.createElement("div", { style: { fontSize: 17 } }, locked ? "🔒" : d.emoji),
+              React.createElement("div", { style: { fontSize: 11, color: selDay === i ? d.clrD : C.textM, fontWeight: 600, marginTop: 3 } }, "День ", d.id),
+              React.createElement("div", { style: { fontSize: 10, color: C.textL } }, locked ? "с 6 июля" : (workoutDays.length > i ? DR[workoutDays[i]] : ""))
+            );
+          })
+        ),
+        selDay === 2 && dayCAvailable && React.createElement("div", { style: { padding: "11px 13px", borderRadius: 10, marginBottom: 11, background: C.warnSoft, border: `0.5px solid ${C.warn}44` } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.warn, marginBottom: 4 } }, "⚠ День C — высокая интенсивность"),
+          React.createElement("div", { style: { fontSize: 11, color: C.text, lineHeight: 1.55 } }, "Начинай с минимальных весов. Без натуживания. Раз в 2 недели вместо Дня A или B — не в дополнение.")
+        ),
+        React.createElement("div", { style: { padding: "11px 13px", borderRadius: 11, marginBottom: 11, background: DAYS[selDay].clrS, border: `0.5px solid ${DAYS[selDay].clr}55` } },
+          React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: C.text } }, DAYS[selDay].emoji, " ", DAYS[selDay].name),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } },
+            "10 мин разминка · ", DAYS[selDay].exercises.length, " упражнений · 30 мин таз. дна после"
+          )
+        ),
+        React.createElement(WorkoutScreen, { day: DAYS[selDay] }),
+        React.createElement(WorkoutHistory, null)
+      ),
+
+      sub === "run" && React.createElement("div", null,
+        !runOpen && React.createElement("div", { style: { padding: "13px 15px", background: C.oliveSoft, border: `0.5px solid ${C.olive}44`, borderRadius: 10, marginBottom: 11 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.oliveDeep, marginBottom: 5 } }, "🏃 Бег/ходьба стартует 15 июня"),
+          React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6 } },
+            "На старте — быстрая ходьба или incline walking. Темп разговорный (должна мочь говорить). При низком ферритине бегать рано — начнём с ходьбы, потом постепенно введём беговые отрезки. 1 раз в неделю (суббота если не тренировочный день)."
+          )
+        ),
+        React.createElement(RunTab, null)
+      ),
+
+      sub === "home" && React.createElement(HomeTab, null)
+    );
+  }
+
+  // ===========================================================================
+  // IronGutTab — железо и запоры: доказательная, структурированная информация.
+  // Источники: Stoffel et al. (Lancet Haematology 2017; Haematologica 2020),
+  // данные по ferrous bisglycinate vs ferrous sulfate, профиль дулоксетина, макрогол.
+  // ===========================================================================
+  function IronGutTab() {
+    const [open, setOpen] = useState(0);
+    const Card = ({ children, bg, bd }) => React.createElement("div", {
+      style: { background: bg || C.card, border: `0.5px solid ${bd || C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 10 }
+    }, children);
+    const H = (t, c) => React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: c || C.text, marginBottom: 6 } }, t);
+    const P = (t) => React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6, marginBottom: 6 } }, t);
+    const Li = (items, clr) => React.createElement("div", null,
+      items.map((t, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 8, marginBottom: 5, alignItems: "flex-start" } },
+        React.createElement("div", { style: { color: clr || C.olive, fontSize: 12, lineHeight: 1.5, flexShrink: 0 } }, "•"),
+        React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.55 } }, t)
+      ))
+    );
+
+    const faq = [
+      { q: "Почему именно «через день», а не каждый день?",
+        a: "В рандомизированных исследованиях (Stoffel и соавт., Lancet Haematology 2017; Haematologica 2020) приём железа через день у женщин с дефицитом давал более высокое усвоение каждой дозы и меньше желудочно-кишечных побочных эффектов, чем ежедневный приём. Причина — гепсидин: после дозы железа он растёт и на ~24 ч снижает всасывание следующей дозы. Пауза в день даёт гепсидину опуститься." },
+      { q: "Gentle Iron крепит так же, как обычное железо?",
+        a: "Обычно меньше. Gentle Iron — это бисглицинат железа (хелат): железо «упаковано» в аминокислоту и высвобождается уже в клетке слизистой, а не в просвете кишки. Поэтому свободного железа, раздражающего кишечник, меньше, и в сравнительных исследованиях бисглицинат даёт значимо меньше запоров и тошноты, чем сульфат железа — при сопоставимом росте ферритина и часто на меньшей дозе." },
+      { q: "У меня запор и от Дуксета тоже?",
+        a: "Да, это важно учитывать: запор — частый побочный эффект дулоксетина (примерно у 10–15% по данным производителя). То есть на запор работают сразу два фактора (железо + Дуксет), плюс исходный хронический запор. Поэтому Форлакс в плане — не «на всякий случай», а обоснованная поддержка." },
+      { q: "Форлакс можно долго? Не будет привыкания?",
+        a: "Макрогол (действующее вещество Форлакса) — осмотическое слабительное, считается средством первой линии при хроническом запоре и подходит для длительного приёма под контролем врача. Он не всасывается в кровь, не раздражает стенку кишки (в отличие от стимулирующих слабительных) и не вызывает физической зависимости. Дозу по мере улучшения обычно постепенно снижают, а не бросают резко." },
+      { q: "Через сколько подействует Форлакс?",
+        a: "Не сразу — обычно через 24–48 часов после первой дозы (нужно время, чтобы вода набралась в кишечнике и размягчила стул). Не пугайся, если в первый день эффекта нет." },
+      { q: "Чёрный стул от железа — это опасно?",
+        a: "Нет, тёмный/почти чёрный стул на фоне железа — норма. Тревожный признак — алая кровь или чёрный дёгтеобразный (липкий, блестящий) стул: это уже повод к врачу, и к обычному потемнению от железа отношения не имеет." },
+    ];
+
+    return React.createElement("div", null,
+      // Вступление
+      Card(React.createElement(React.Fragment, null,
+        H("🌀 Железо и запоры — почему это связано", C.oliveDeep),
+        P("У тебя на запор работают три фактора сразу: само железо, Дуксет (дулоксетин) и исходный хронический запор. Хорошая новость — план это уже учитывает: мягкая форма железа (Gentle Iron), приём через день и Форлакс."),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, fontStyle: "italic", lineHeight: 1.5 } },
+          "Это справочная информация, не замена консультации врача.")
+      ), C.oliveSoft, C.olive + "55"),
+
+      // Что снижает запор от железа
+      Card(React.createElement(React.Fragment, null,
+        H("Что реально снижает запор от железа"),
+        Li([
+          React.createElement(React.Fragment, null, React.createElement("b", null, "Форма железа."), " Gentle Iron (бисглицинат) мягче для ЖКТ, чем сульфат железа."),
+          React.createElement(React.Fragment, null, React.createElement("b", null, "Приём через день."), " Меньше железа раздражает кишечник и выше усвоение каждой дозы."),
+          React.createElement(React.Fragment, null, React.createElement("b", null, "Достаточно воды."), " Без жидкости любое слабительное (и Форлакс) не работает."),
+          React.createElement(React.Fragment, null, React.createElement("b", null, "Клетчатка и движение."), " Овощи, фрукты, цельные злаки + ежедневная ходьба поддерживают моторику."),
+          React.createElement(React.Fragment, null, React.createElement("b", null, "Не превышать дозу."), " Больше железа ≠ быстрее результат: лишнее не усваивается и усиливает запор."),
+        ])
+      )),
+
+      // Красные флаги
+      Card(React.createElement(React.Fragment, null,
+        H("🚩 Когда к врачу", C.warn),
+        Li([
+          "Алая кровь в стуле или чёрный липкий дёгтеобразный стул",
+          "Запор дольше 3 дней подряд несмотря на Форлакс, или сильная боль/вздутие",
+          "Рвота, отсутствие газов и стула (признаки непроходимости) — срочно",
+          "Резкая смена режима стула, которая держится неделями",
+        ], C.warn)
+      ), C.warnSoft, C.warn + "55"),
+
+      // FAQ
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, margin: "4px 0 8px", letterSpacing: 0.3, textTransform: "uppercase" } }, "Подробнее (доказательно)"),
+      faq.map((f, i) => React.createElement("div", { key: i, style: { marginBottom: 7 } },
+        React.createElement("button", {
+          onClick: () => setOpen(open === i ? -1 : i),
+          "aria-expanded": open === i,
+          style: { width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+            background: C.card, border: `0.5px solid ${open === i ? C.olive : C.border}`, borderRadius: 10, padding: "11px 13px",
+            cursor: "pointer", fontFamily: "inherit" }
+        },
+          React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600, color: C.text } }, f.q),
+          React.createElement("span", { "aria-hidden": "true", style: { fontSize: 11, color: C.textL, flexShrink: 0 } }, open === i ? "▲" : "▼")
+        ),
+        open === i && React.createElement("div", { className: "ux-enter", style: { background: C.bgWarm, borderRadius: 9, padding: "11px 13px", marginTop: 4, fontSize: 12, color: C.text, lineHeight: 1.6 } }, f.a)
+      )),
+
+      // Источники
+      React.createElement("div", { style: { fontSize: 10.5, color: C.textL, lineHeight: 1.6, marginTop: 10, padding: "10px 12px", background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 9 } },
+        React.createElement("b", null, "Источники:"), " Stoffel NU et al., Lancet Haematology 2017 и Haematologica 2020 (приём железа через день); сравнительные данные ferrous bisglycinate vs ferrous sulfate; инструкция дулоксетина (частота запора 10–15%); рекомендации по макроголу как средству первой линии при хроническом запоре."
+      )
+    );
+  }
+
+  // ===========================================================================
+  // HealthTab — Цикл, Совместимость, Железо и ЖКТ, Это нормально, Тренды, Анализы, Питание.
+  // ===========================================================================
+  function HealthTab({ cycleAnchor, packAnchor, periodOverrides }) {
+    const [sub, setSub] = useLS("healthSubV1", "cycle");
+    const subs = [
+      { id: "cycle",   l: "🌿 Цикл" },
+      { id: "compat",  l: "💊 Совмест." },
+      { id: "gut",     l: "🌀 Железо и ЖКТ" },
+      { id: "normal",  l: "❓ Норма" },
+      { id: "trends",  l: "📈 Тренды" },
+      { id: "tests",   l: "🩸 Анализы" },
+      { id: "nutrition", l: "🥗 Питание" },
+    ];
+    return React.createElement("div", null,
+      React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 14, overflowX: "auto", paddingBottom: 2 } },
+        subs.map(s => React.createElement("button", { key: s.id, onClick: () => setSub(s.id),
+          style: { padding: "8px 11px", borderRadius: 8, border: `0.5px solid ${sub === s.id ? C.olive : C.border}`,
+            background: sub === s.id ? C.olive : C.card, color: sub === s.id ? "#fff" : C.textM,
+            fontSize: 11, fontWeight: sub === s.id ? 600 : 500, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }
+        }, s.l))
+      ),
+      sub === "cycle" && React.createElement(CycleSubTab, { cycleAnchor, packAnchor }),
+      sub === "compat" && React.createElement(CompatibilityMatrix, null),
+      sub === "gut" && React.createElement(IronGutTab, null),
+      sub === "normal" && React.createElement(NormalFAQ, null),
+      sub === "trends" && React.createElement(TrendsTab, null),
+      sub === "tests" && React.createElement(IronSubTab, null),
+      sub === "nutrition" && React.createElement(NutritionTab, null)
+    );
+  }
+    function DayDot({ isWD, isToday, isDone, label, clr }) {
+    const size = 36;
+    if (isDone) return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 36 36" }, /* @__PURE__ */ React.createElement("rect", { width: "36", height: "36", rx: "9", fill: C.olive }), /* @__PURE__ */ React.createElement("path", { d: "M10 18 L15.5 23.5 L26 13", stroke: "white", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }));
+    if (isToday && isWD) return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 36 36" }, /* @__PURE__ */ React.createElement("rect", { width: "36", height: "36", rx: "9", fill: C.oliveSoft }), /* @__PURE__ */ React.createElement("rect", { x: "1", y: "1", width: "34", height: "34", rx: "8", fill: "none", stroke: C.olive, strokeWidth: "2" }), /* @__PURE__ */ React.createElement("text", { x: "18", y: "23", textAnchor: "middle", fontSize: "15", fontFamily: "sans-serif" }, label));
+    if (isWD) return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 36 36" }, /* @__PURE__ */ React.createElement("rect", { width: "36", height: "36", rx: "9", fill: "white", stroke: C.borderM, strokeWidth: "1.5" }), /* @__PURE__ */ React.createElement("text", { x: "18", y: "23", textAnchor: "middle", fontSize: "15", fontFamily: "sans-serif" }, label));
+    return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 36 36" }, /* @__PURE__ */ React.createElement("rect", { width: "36", height: "36", rx: "9", fill: C.bgWarm }), /* @__PURE__ */ React.createElement("circle", { cx: "18", cy: "18", r: "3", fill: C.border }));
+  }
+  const RUN_WEEKS = [
+    { week: 1, title: "\u041F\u0440\u0438\u0432\u044B\u043A\u0430\u0435\u043C", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "\u0425\u043E\u0434\u044C\u0431\u0430 20 \u043C\u0438\u043D", detail: "\u041F\u0440\u043E\u0441\u0442\u043E \u0445\u043E\u0434\u044C\u0431\u0430 \u0431\u044B\u0441\u0442\u0440\u044B\u043C \u0448\u0430\u0433\u043E\u043C, \u0442\u0435\u043C\u043F 6\u20137 \u043A\u043C/\u0447. \u0426\u0435\u043B\u044C \u2014 \u043F\u0440\u0438\u0432\u044B\u0447\u043A\u0430 \u0432\u044B\u0445\u043E\u0434\u0438\u0442\u044C.", feel: "\u0414\u043E\u043B\u0436\u043D\u0430 \u0447\u0443\u0432\u0441\u0442\u0432\u043E\u0432\u0430\u0442\u044C \u0441\u0435\u0431\u044F \u043A\u043E\u043C\u0444\u043E\u0440\u0442\u043D\u043E, \u043D\u0435 \u0437\u0430\u043F\u044B\u0445\u0430\u0442\u044C\u0441\u044F." },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "\u0425\u043E\u0434\u044C\u0431\u0430 20 \u043C\u0438\u043D", detail: "\u0422\u043E \u0436\u0435 \u0441\u0430\u043C\u043E\u0435. \u0417\u0430\u043C\u0435\u0447\u0430\u0439 \u0441\u0432\u043E\u0451 \u0434\u044B\u0445\u0430\u043D\u0438\u0435 \u0438 \u043E\u0441\u0430\u043D\u043A\u0443. \u041F\u043B\u0435\u0447\u0438 \u0440\u0430\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u044B, \u0432\u0437\u0433\u043B\u044F\u0434 \u0432\u043F\u0435\u0440\u0451\u0434.", feel: "\u041D\u0435\u0431\u043E\u043B\u044C\u0448\u0430\u044F \u0443\u0441\u0442\u0430\u043B\u043E\u0441\u0442\u044C \u2014 \u043D\u043E\u0440\u043C\u0430." },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "\u0425\u043E\u0434\u044C\u0431\u0430 25 \u043C\u0438\u043D", detail: "\u041D\u0435\u043C\u043D\u043E\u0433\u043E \u0434\u043B\u0438\u043D\u043D\u0435\u0435. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u043D\u0435\u043C\u043D\u043E\u0433\u043E \u043D\u0430\u043A\u043B\u043E\u043D \u0435\u0441\u043B\u0438 \u0435\u0441\u0442\u044C \u0433\u043E\u0440\u043A\u0430 \u2014 \u044F\u0433\u043E\u0434\u0438\u0446\u044B \u0440\u0430\u0431\u043E\u0442\u0430\u044E\u0442 \u043B\u0443\u0447\u0448\u0435.", feel: "\u041B\u0435\u0433\u043A\u043E. \u0422\u0430\u043A \u0438 \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u043D\u0430 \u043F\u0435\u0440\u0432\u043E\u0439 \u043D\u0435\u0434\u0435\u043B\u0435." }
+    ] },
+    { week: 2, title: "\u041F\u0435\u0440\u0432\u044B\u0435 \u0431\u0435\u0433\u043E\u0432\u044B\u0435 \u0432\u0441\u0442\u0430\u0432\u043A\u0438", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "1 \u043C\u0438\u043D \u0431\u0435\u0433 / 4 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 4", detail: "\u0427\u0435\u0440\u0435\u0434\u0443\u0439: 1 \u043C\u0438\u043D\u0443\u0442\u0430 \u043B\u0451\u0433\u043A\u043E\u0433\u043E \u0431\u0435\u0433\u0430, \u043F\u043E\u0442\u043E\u043C 4 \u043C\u0438\u043D\u0443\u0442\u044B \u0445\u043E\u0434\u044C\u0431\u044B. \u041F\u043E\u0432\u0442\u043E\u0440\u0438 4 \u0440\u0430\u0437\u0430. \u0418\u0442\u043E\u0433\u043E 20 \u043C\u0438\u043D.", feel: "\u0411\u0435\u0433 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u0440\u0430\u0437\u0433\u043E\u0432\u043E\u0440\u043D\u044B\u043C \u2014 \u0435\u0441\u043B\u0438 \u043D\u0435 \u043C\u043E\u0436\u0435\u0448\u044C \u0433\u043E\u0432\u043E\u0440\u0438\u0442\u044C, \u0437\u0430\u043C\u0435\u0434\u043B\u0438\u0441\u044C." },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "1 \u043C\u0438\u043D \u0431\u0435\u0433 / 4 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 4", detail: "\u0422\u0430 \u0436\u0435 \u0441\u0445\u0435\u043C\u0430. \u041E\u0431\u0440\u0430\u0449\u0430\u0439 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435 \u043D\u0430 \u043F\u0440\u0438\u0437\u0435\u043C\u043B\u0435\u043D\u0438\u0435 \u2014 \u043D\u0430 \u0441\u0435\u0440\u0435\u0434\u0438\u043D\u0443 \u0441\u0442\u043E\u043F\u044B, \u043D\u0435 \u043D\u0430 \u043F\u044F\u0442\u043A\u0443.", feel: "\u041D\u0435\u0431\u043E\u043B\u044C\u0448\u0430\u044F \u043B\u0451\u0433\u043A\u043E\u0441\u0442\u044C \u2014 \u0445\u043E\u0440\u043E\u0448\u0438\u0439 \u0437\u043D\u0430\u043A." },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "1 \u043C\u0438\u043D \u0431\u0435\u0433 / 3 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 5", detail: "\u041D\u0435\u043C\u043D\u043E\u0433\u043E \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u043B\u0438 \u0431\u0435\u0433\u043E\u0432\u044B\u0435 \u043E\u0442\u0440\u0435\u0437\u043A\u0438 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u0445\u043E\u0434\u044C\u0431\u044B. 25 \u043C\u0438\u043D\u0443\u0442 \u0438\u0442\u043E\u0433\u043E.", feel: "\u0414\u044B\u0445\u0430\u043D\u0438\u0435 \u0440\u043E\u0432\u043D\u043E\u0435, \u043C\u043E\u0436\u0435\u0448\u044C \u0433\u043E\u0432\u043E\u0440\u0438\u0442\u044C \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u044F\u043C\u0438." }
+    ] },
+    { week: 3, title: "\u0421\u0442\u0440\u043E\u0438\u043C \u0432\u044B\u043D\u043E\u0441\u043B\u0438\u0432\u043E\u0441\u0442\u044C", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "2 \u043C\u0438\u043D \u0431\u0435\u0433 / 3 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 5", detail: "25 \u043C\u0438\u043D\u0443\u0442. \u0411\u0435\u0433\u043E\u0432\u044B\u0435 \u043E\u0442\u0440\u0435\u0437\u043A\u0438 \u0443\u0436\u0435 2 \u043C\u0438\u043D\u0443\u0442\u044B \u2014 \u044D\u0442\u043E \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441 \u0437\u0430 2 \u043D\u0435\u0434\u0435\u043B\u0438!", feel: "\u041B\u0451\u0433\u043A\u0438\u0439 \u0434\u0438\u0441\u043A\u043E\u043C\u0444\u043E\u0440\u0442 \u0432 \u043A\u043E\u043D\u0446\u0435 \u0431\u0435\u0433\u043E\u0432\u044B\u0445 \u043E\u0442\u0440\u0435\u0437\u043A\u043E\u0432 \u2014 \u043D\u043E\u0440\u043C\u0430." },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "2 \u043C\u0438\u043D \u0431\u0435\u0433 / 2 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 6", detail: "24 \u043C\u0438\u043D\u0443\u0442\u044B. \u0425\u043E\u0434\u044C\u0431\u0430 \u0438 \u0431\u0435\u0433 \u043F\u043E\u0440\u043E\u0432\u043D\u0443. \u0422\u0435\u043C\u043F \u0431\u0435\u0433\u043E\u0432\u043E\u0439 \u0447\u0430\u0441\u0442\u0438 \u2014 \u043B\u0451\u0433\u043A\u0438\u0439, \u043D\u0435 \u0433\u043E\u043D\u0438.", feel: "\u041A \u043A\u043E\u043D\u0446\u0443 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438 \u2014 \u043F\u0440\u0438\u044F\u0442\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043B\u043E\u0441\u0442\u044C." },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "3 \u043C\u0438\u043D \u0431\u0435\u0433 / 2 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 4", detail: "20 \u043C\u0438\u043D\u0443\u0442. \u041F\u0435\u0440\u0432\u044B\u0439 \u0440\u0430\u0437 \u0431\u0435\u0436\u0438\u0448\u044C 3 \u043C\u0438\u043D\u0443\u0442\u044B \u043F\u043E\u0434\u0440\u044F\u0434. \u042D\u0442\u043E \u043F\u043E\u0431\u0435\u0434\u0430!", feel: "\u0415\u0441\u043B\u0438 \u0442\u044F\u0436\u0435\u043B\u043E \u2014 \u0437\u0430\u043C\u0435\u0434\u043B\u0438 \u0431\u0435\u0433 \u0434\u043E \u043F\u043E\u0447\u0442\u0438 \u0445\u043E\u0434\u044C\u0431\u044B, \u043D\u043E \u043D\u0435 \u043E\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0439\u0441\u044F." }
+    ] },
+    { week: 4, title: "\u041F\u0435\u0440\u0432\u044B\u0439 \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u044B\u0439 \u0431\u0435\u0433", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "5 \u043C\u0438\u043D \u0431\u0435\u0433 / 2 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 3", detail: "21 \u043C\u0438\u043D\u0443\u0442\u0430. 5 \u043C\u0438\u043D\u0443\u0442 \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u043E\u0433\u043E \u0431\u0435\u0433\u0430 \u2014 \u0437\u043D\u0430\u0447\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0439 \u0440\u0443\u0431\u0435\u0436.", feel: "\u0422\u0435\u043C\u043F \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u0442\u0430\u043A\u043E\u0439, \u0447\u0442\u043E\u0431\u044B \u0442\u044B \u043C\u043E\u0433\u043B\u0430 \u043F\u0435\u0442\u044C (\u043F\u043E\u0447\u0442\u0438)." },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "8 \u043C\u0438\u043D \u0431\u0435\u0433 / 2 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u0430 \xD7 2", detail: "20 \u043C\u0438\u043D\u0443\u0442. \u0414\u0432\u0430 \u0434\u043B\u0438\u043D\u043D\u044B\u0445 \u0431\u0435\u0433\u043E\u0432\u044B\u0445 \u043E\u0442\u0440\u0435\u0437\u043A\u0430 \u0441 \u043E\u0434\u043D\u0438\u043C \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u043E\u043C.", feel: "\u0413\u043E\u0440\u0434\u043E\u0441\u0442\u044C \u2014 \u0442\u044B \u0431\u0435\u0436\u0438\u0448\u044C 8 \u043C\u0438\u043D\u0443\u0442 \u043F\u043E\u0434\u0440\u044F\u0434!" },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "\u0411\u0435\u0433 15\u201320 \u043C\u0438\u043D \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u043E", detail: "\u041F\u0435\u0440\u0432\u044B\u0439 \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0438\u0439 \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u044B\u0439 \u0431\u0435\u0433! \u0422\u0435\u043C\u043F \u043E\u0447\u0435\u043D\u044C \u043B\u0451\u0433\u043A\u0438\u0439 \u2014 \u0433\u043B\u0430\u0432\u043D\u043E\u0435 \u043D\u0435 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\u0441\u044F. \u041C\u043E\u0436\u043D\u043E \u0438\u0434\u0442\u0438 \u0435\u0441\u043B\u0438 \u0441\u043E\u0432\u0441\u0435\u043C \u0442\u044F\u0436\u0435\u043B\u043E.", feel: "\u041F\u043E\u0441\u043B\u0435 \u2014 \u044D\u0439\u0444\u043E\u0440\u0438\u044F. \u0417\u0430\u0441\u043B\u0443\u0436\u0435\u043D\u043D\u0430\u044F." }
+    ] },
+    { week: 5, title: "\u0423\u043A\u0440\u0435\u043F\u043B\u044F\u0435\u043C \u043F\u0440\u0438\u0432\u044B\u0447\u043A\u0443", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "\u0411\u0435\u0433 20 \u043C\u0438\u043D", detail: "\u041F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043C. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u043D\u0435\u043C\u043D\u043E\u0433\u043E \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0442\u044C \u0442\u0435\u043C\u043F \u043D\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0445 5 \u043C\u0438\u043D\u0443\u0442\u0430\u0445.", feel: "\u0411\u0435\u0433 \u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0441\u044F \u043F\u0440\u0438\u0432\u044B\u0447\u043D\u044B\u043C \u2014 \u0437\u0430\u043C\u0435\u0447\u0430\u0435\u0448\u044C?" },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "\u0418\u043D\u0442\u0435\u0440\u0432\u0430\u043B\u044B: 1 \u043C\u0438\u043D \u0431\u044B\u0441\u0442\u0440\u043E / 2 \u043C\u0438\u043D \u0441\u043F\u043E\u043A\u043E\u0439\u043D\u043E \xD7 6", detail: "\u041F\u0435\u0440\u0432\u0430\u044F \u0438\u043D\u0442\u0435\u0440\u0432\u0430\u043B\u044C\u043D\u0430\u044F \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0430. \u0411\u044B\u0441\u0442\u0440\u043E \u2014 \u043D\u0435 \u0441\u043F\u0440\u0438\u043D\u0442, \u043F\u0440\u043E\u0441\u0442\u043E \u043A\u043E\u043C\u0444\u043E\u0440\u0442\u043D\u043E \u0431\u044B\u0441\u0442\u0440\u0435\u0435 \u043E\u0431\u044B\u0447\u043D\u043E\u0433\u043E.", feel: "\u041F\u0440\u0438\u044F\u0442\u043D\u0430\u044F \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043D\u0430 \u0441\u0435\u0440\u0434\u0446\u0435. \u0414\u044B\u0448\u0438\u0448\u044C \u0433\u043B\u0443\u0431\u043E\u043A\u043E." },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "\u0411\u0435\u0433 25 \u043C\u0438\u043D", detail: "\u0414\u043B\u0438\u043D\u043D\u0435\u0439\u0448\u0430\u044F \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0430! \u0422\u0435\u043C\u043F \u2014 \u0441\u0430\u043C\u044B\u0439 \u0441\u043F\u043E\u043A\u043E\u0439\u043D\u044B\u0439. \u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0432\u0430\u0436\u043D\u0435\u0435 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u0438.", feel: "\u041A \u0444\u0438\u043D\u0438\u0448\u0443 \u2014 \u0443\u0441\u0442\u0430\u043B\u0430\u044F \u043D\u043E \u0434\u043E\u0432\u043E\u043B\u044C\u043D\u0430\u044F." }
+    ] },
+    { week: 6, title: "5 \u043A\u043C \u2014 \u0446\u0435\u043B\u044C \u0431\u043B\u0438\u0437\u043A\u043E", sessions: [
+      { day: "\u0414\u0435\u043D\u044C 1", plan: "\u0411\u0435\u0433 25 \u043C\u0438\u043D", detail: "\u041F\u043E\u0434\u0434\u0435\u0440\u0436\u0430\u043D\u0438\u0435 \u0444\u043E\u0440\u043C\u044B. \u0414\u043E\u0431\u0430\u0432\u044C \u0434\u0438\u043D\u0430\u043C\u0438\u0447\u0435\u0441\u043A\u0443\u044E \u0440\u0430\u0437\u043C\u0438\u043D\u043A\u0443 \u2014 5 \u043C\u0438\u043D \u0445\u043E\u0434\u044C\u0431\u044B \u043F\u0435\u0440\u0435\u0434 \u0431\u0435\u0433\u043E\u043C.", feel: "\u042D\u0442\u043E \u0443\u0436\u0435 \u043F\u0440\u0438\u0432\u044B\u0447\u043A\u0430 \u2014 \u043E\u0442\u043B\u0438\u0447\u043D\u043E!" },
+      { day: "\u0414\u0435\u043D\u044C 2", plan: "\u0418\u043D\u0442\u0435\u0440\u0432\u0430\u043B\u044B: 2 \u043C\u0438\u043D \u0431\u044B\u0441\u0442\u0440\u043E / 2 \u043C\u0438\u043D \u0441\u043F\u043E\u043A\u043E\u0439\u043D\u043E \xD7 5", detail: "\u0411\u043E\u043B\u0435\u0435 \u0441\u043B\u043E\u0436\u043D\u044B\u0435 \u0438\u043D\u0442\u0435\u0440\u0432\u0430\u043B\u044B \u0434\u043B\u044F \u0440\u0430\u0437\u0432\u0438\u0442\u0438\u044F \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u0438.", feel: "\u041B\u0451\u0433\u043A\u043E\u0435 \u0436\u0436\u0435\u043D\u0438\u0435 \u0432 \u043C\u044B\u0448\u0446\u0430\u0445 \u2014 \u044D\u0442\u043E \u0440\u043E\u0441\u0442." },
+      { day: "\u0414\u0435\u043D\u044C 3", plan: "\u0411\u0435\u0433 30 \u043C\u0438\u043D", detail: "30 \u043C\u0438\u043D\u0443\u0442 \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u043E\u0433\u043E \u0431\u0435\u0433\u0430. \u0422\u044B \u043F\u0440\u043E\u0448\u043B\u0430 \u043F\u0443\u0442\u044C \u043E\u0442 \u043D\u0443\u043B\u044F \u0434\u043E \u043F\u043E\u043B\u0447\u0430\u0441\u0430 \u0437\u0430 6 \u043D\u0435\u0434\u0435\u043B\u044C!", feel: "\u0413\u043E\u0440\u0434\u043E\u0441\u0442\u044C. \u0422\u044B \u044D\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u043B\u0430." }
+    ] }
+  ];
+  const RUN_TIPS = [
+    { icon: "🦴", title: "\u0411\u0435\u0433 \u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437", text: "\u0411\u0435\u0433 \u2014 \u0443\u0434\u0430\u0440\u043D\u0430\u044F \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0430. \u041F\u0440\u0438 \u0441\u043A\u043E\u043B\u0438\u043E\u0437\u0435 \u0432\u0430\u0436\u043D\u043E: \u0431\u0435\u0433\u043E\u0432\u0430\u044F \u043F\u043E\u0432\u0435\u0440\u0445\u043D\u043E\u0441\u0442\u044C \u0441 \u0430\u043C\u043E\u0440\u0442\u0438\u0437\u0430\u0446\u0438\u0435\u0439 (\u0431\u0435\u0433\u043E\u0432\u0430\u044F \u0434\u043E\u0440\u043E\u0436\u043A\u0430 \u0438\u043B\u0438 \u043C\u044F\u0433\u043A\u0438\u0439 \u0430\u0441\u0444\u0430\u043B\u044C\u0442), \u0445\u043E\u0440\u043E\u0448\u0438\u0435 \u043A\u0440\u043E\u0441\u0441\u043E\u0432\u043A\u0438 \u0441 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u043E\u0439, \u0438 \u0440\u0430\u0437\u043C\u0438\u043D\u043A\u0430 \u043F\u0435\u0440\u0435\u0434 \u043A\u0430\u0436\u0434\u043E\u0439 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u043E\u0439. \u041F\u0440\u0438\u0441\u043B\u0443\u0448\u0438\u0432\u0430\u0439\u0441\u044F \u043A \u0441\u043F\u0438\u043D\u0435." },
+    { icon: "🌸", title: "\u0411\u0435\u0433 \u0438 \u0442\u0430\u0437\u043E\u0432\u043E\u0435 \u0434\u043D\u043E", text: "\u041F\u0440\u0438 \u0441\u043F\u0430\u0437\u043C\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430 \u043D\u0430\u0447\u0438\u043D\u0430\u0439 \u0442\u043E\u043B\u044C\u043A\u043E \u0441 \u0445\u043E\u0434\u044C\u0431\u044B. \u041F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u0431\u0435\u0433\u0443 \u043A\u043E\u0433\u0434\u0430 \u043F\u043E\u0447\u0443\u0432\u0441\u0442\u0432\u0443\u0435\u0448\u044C \u0443\u043B\u0443\u0447\u0448\u0435\u043D\u0438\u0435. \u041F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0435\u0433\u043E\u0432\u043E\u0439 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438 \u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E \u0434\u0435\u043B\u0430\u0439 \u0434\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u044B\u0445\u0430\u043D\u0438\u0435 \u043B\u0451\u0436\u0430 \u2014 5 \u043C\u0438\u043D\u0443\u0442." },
+    { icon: "👟", title: "\u041E\u0431\u0443\u0432\u044C \u2014 \u043A\u0440\u0438\u0442\u0438\u0447\u043D\u043E \u0432\u0430\u0436\u043D\u0430", text: "\u0414\u043B\u044F \u043D\u0430\u0447\u0430\u043B\u0430 \u0431\u0435\u0433\u0430 \u043D\u0443\u0436\u043D\u044B \u043A\u0440\u043E\u0441\u0441\u043E\u0432\u043A\u0438 \u0441 \u0445\u043E\u0440\u043E\u0448\u0435\u0439 \u0430\u043C\u043E\u0440\u0442\u0438\u0437\u0430\u0446\u0438\u0435\u0439 \u0438 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u043E\u0439 \u0441\u0432\u043E\u0434\u0430. \u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u044E: Asics Gel-Nimbus, Brooks Ghost, New Balance Fresh Foam. \u041A\u0443\u043F\u0438 \u0432 \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0437\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u043C \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435 \u0441 \u0430\u043D\u0430\u043B\u0438\u0437\u043E\u043C \u043F\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438 \u0441\u0442\u043E\u043F\u044B." },
+    { icon: "💨", title: "\u041A\u0430\u043A \u0434\u044B\u0448\u0430\u0442\u044C \u043F\u0440\u0438 \u0431\u0435\u0433\u0435", text: "\u0414\u044B\u0448\u0438 \u0447\u0435\u0440\u0435\u0437 \u043D\u043E\u0441 \u0438 \u0440\u043E\u0442 \u043E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E. \u0420\u0438\u0442\u043C 2:2 \u2014 \u0432\u0434\u043E\u0445 \u043D\u0430 2 \u0448\u0430\u0433\u0430, \u0432\u044B\u0434\u043E\u0445 \u043D\u0430 2 \u0448\u0430\u0433\u0430. \u0415\u0441\u043B\u0438 \u0437\u0430\u0434\u044B\u0445\u0430\u0435\u0448\u044C\u0441\u044F \u2014 \u0437\u0430\u043C\u0435\u0434\u043B\u0438\u0441\u044C \u0434\u043E \u0445\u043E\u0434\u044C\u0431\u044B. \u042D\u0442\u043E \u043D\u0435 \u0441\u043B\u0430\u0431\u043E\u0441\u0442\u044C, \u044D\u0442\u043E \u0443\u043C\u043D\u044B\u0439 \u043F\u043E\u0434\u0445\u043E\u0434." },
+    { icon: "🕐", title: "\u041A\u043E\u0433\u0434\u0430 \u0431\u0435\u0433\u0430\u0442\u044C", text: "\u041D\u0435 \u0432 \u043E\u0434\u0438\u043D \u0434\u0435\u043D\u044C \u0441 \u0441\u0438\u043B\u043E\u0432\u043E\u0439 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u043E\u0439 \u043F\u0435\u0440\u0432\u044B\u0435 4 \u043D\u0435\u0434\u0435\u043B\u0438. \u0418\u0434\u0435\u0430\u043B\u044C\u043D\u043E: \u0431\u0435\u0433 \u0432 \u0434\u043D\u0438 \u043E\u0442\u0434\u044B\u0445\u0430 \u043E\u0442 \u0437\u0430\u043B\u0430 (\u0412\u0442, \u0427\u0442, \u0421\u0431 \u0438\u043B\u0438 \u043F\u043E \u0441\u0432\u043E\u0435\u043C\u0443 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044E). \u041F\u043E\u0441\u043B\u0435 4 \u043D\u0435\u0434\u0435\u043B\u0438 \u043C\u043E\u0436\u043D\u043E \u043A\u043E\u043C\u0431\u0438\u043D\u0438\u0440\u043E\u0432\u0430\u0442\u044C: \u0437\u0430\u043B \u0443\u0442\u0440\u043E\u043C, \u043B\u0451\u0433\u043A\u0438\u0439 \u0431\u0435\u0433 \u0432\u0435\u0447\u0435\u0440\u043E\u043C." },
+    { icon: "📏", title: "\u0422\u0435\u043C\u043F \u0434\u043B\u044F \u043D\u043E\u0432\u0438\u0447\u043A\u0430", text: "\u0420\u0430\u0437\u0433\u043E\u0432\u043E\u0440\u043D\u044B\u0439 \u0442\u0435\u043C\u043F \u2014 \u043F\u0440\u0430\u0432\u0438\u043B\u043E \u21161. \u0422\u044B \u0434\u043E\u043B\u0436\u043D\u0430 \u043C\u043E\u0447\u044C \u043F\u0440\u043E\u0438\u0437\u043D\u0435\u0441\u0442\u0438 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0438\u0437 5 \u0441\u043B\u043E\u0432 \u043D\u0435 \u0437\u0430\u0434\u044B\u0445\u0430\u044F\u0441\u044C. \u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u0443 \u0431\u043E\u043B\u044C\u0448\u0438\u043D\u0441\u0442\u0432\u0430 \u043D\u043E\u0432\u0438\u0447\u043A\u043E\u0432: 6\u20138 \u043C\u0438\u043D/\u043A\u043C. \u042D\u0442\u043E \u043D\u043E\u0440\u043C\u0430\u043B\u044C\u043D\u043E \u0438 \u0434\u0430\u0436\u0435 \u0445\u043E\u0440\u043E\u0448\u043E." }
+  ];
+  function RunTab() {
+    const [selWeek, setSelWeek] = useLS("runWeek", 0);
+    const [doneRuns, setDoneRuns] = useLS("runDone", {});
+    const [showTips, setShowTips] = useState(false);
+    const totalRuns = RUN_WEEKS.reduce((a, w) => a + w.sessions.length, 0);
+    const completedRuns = Object.values(doneRuns).filter(Boolean).length;
+    const toggleRun = (key) => setDoneRuns((d) => ({ ...d, [key]: !d[key] }));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: `linear-gradient(135deg, ${C.oliveSoft}, ${C.card})`, borderRadius: 14, padding: "14px 16px", marginBottom: 14, border: `1.5px solid ${C.olive}44`, boxShadow: C.shadow } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: C.text } }, "🏃\u200D\u2640\uFE0F \u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u0431\u0435\u0433\u0430"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "6 \u043D\u0435\u0434\u0435\u043B\u044C \xB7 \u0421 \u043D\u0443\u043B\u044F \u0434\u043E 30 \u043C\u0438\u043D")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: C.olive } }, completedRuns, "/", totalRuns), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, "\u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043E\u043A"))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, background: C.bgWarm, borderRadius: 5, height: 6, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: "100%", width: `${Math.round(completedRuns / totalRuns * 100)}%`, background: `linear-gradient(90deg, ${C.olive}, ${C.sand})`, borderRadius: 5, transition: "width .5s" } })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 5 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, "\u041D\u0430\u0447\u0430\u043B\u043E"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: C.textL } }, "30 \u043C\u0438\u043D \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u043E\u0433\u043E \u0431\u0435\u0433\u0430"))), /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 12px", background: C.warnSoft, borderRadius: 10, marginBottom: 12, border: `1px solid ${C.warn}44` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.warn, marginBottom: 3 } }, "\u0412\u0430\u0436\u043D\u043E \u043F\u0435\u0440\u0435\u0434 \u0441\u0442\u0430\u0440\u0442\u043E\u043C"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.6 } }, "\u041F\u0440\u0438 \u0441\u043F\u0430\u0437\u043C\u0435 \u0442\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0434\u043D\u0430 \u2014 \u043D\u0430\u0447\u0438\u043D\u0430\u0439 \u0442\u043E\u043B\u044C\u043A\u043E \u0441 \u0445\u043E\u0434\u044C\u0431\u044B (\u043D\u0435\u0434\u0435\u043B\u0438 1\u20132). \u041F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u0431\u0435\u0433\u0443 \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E. \u041F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438: \u0434\u0438\u0430\u0444\u0440\u0430\u0433\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u044B\u0445\u0430\u043D\u0438\u0435 \u043B\u0451\u0436\u0430 5 \u043C\u0438\u043D \u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" } }, RUN_WEEKS.map((w, i) => {
+      const wDone = w.sessions.filter((_, j) => doneRuns[`${i}-${j}`]).length;
+      const allDone = wDone === w.sessions.length;
+      return /* @__PURE__ */ React.createElement("button", { key: i, onClick: () => setSelWeek(i), style: {
+        padding: "7px 10px",
+        borderRadius: 9,
+        border: `1.5px solid ${selWeek === i ? C.olive : allDone ? C.olive + "66" : C.border}`,
+        background: selWeek === i ? C.oliveSoft : allDone ? C.oliveSoft + "88" : C.card,
+        cursor: "pointer",
+        fontFamily: "inherit"
+      } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 9, color: selWeek === i ? C.oliveDeep : C.textL } }, "\u041D\u0435\u0434 ", i + 1), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: selWeek === i ? C.oliveDeep : C.textM } }, allDone ? "\u2713" : `${wDone}/${w.sessions.length}`));
+    })), (() => {
+      const w = RUN_WEEKS[selWeek];
+      return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { background: C.card, borderRadius: 12, padding: "12px 14px", marginBottom: 12, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 800, color: C.text } }, "\u041D\u0435\u0434\u0435\u043B\u044F ", selWeek + 1, ": ", w.title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, w.sessions.length, " \u0442\u0440\u0435\u043D\u0438\u0440\u043E\u0432\u043A\u0438 \xB7 \u041D\u0435 \u0432 \u0434\u043D\u0438 \u0441\u0438\u043B\u043E\u0432\u044B\u0445 \u043F\u0435\u0440\u0432\u044B\u0435 4 \u043D\u0435\u0434")), w.sessions.map((s, j) => {
+        const key = `${selWeek}-${j}`;
+        const done = doneRuns[key];
+        return /* @__PURE__ */ React.createElement("div", { key: j, style: { background: done ? C.oliveSoft : C.card, border: `1.5px solid ${done ? C.olive + "66" : C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 8, boxShadow: C.shadow } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.textL, fontWeight: 600 } }, s.day), /* @__PURE__ */ React.createElement("div", { style: { background: done ? C.olive : C.bgWarm, borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, color: done ? C.white : C.text } }, s.plan)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM, lineHeight: 1.55, marginBottom: 5 } }, s.detail), /* @__PURE__ */ React.createElement("div", { style: { padding: "6px 9px", background: done ? C.olive + "18" : C.bgWarm, borderRadius: 7 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.oliveDeep } }, "💡 ", s.feel))), /* @__PURE__ */ React.createElement("button", { onClick: () => toggleRun(key), style: { width: 30, height: 30, borderRadius: 8, border: `2px solid ${done ? C.olive : C.borderM}`, background: done ? C.olive : "transparent", color: done ? C.white : C.textL, cursor: "pointer", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, done ? "\u2713" : "")));
+      }));
+    })(), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowTips(!showTips), style: { width: "100%", marginTop: 4, padding: "10px 14px", borderRadius: 11, background: C.card, border: `1px solid ${C.border}`, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit", boxShadow: C.shadow } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, "\u0421\u043E\u0432\u0435\u0442\u044B \u043F\u043E \u0431\u0435\u0433\u0443 \u0434\u043B\u044F \u0442\u0435\u0431\u044F"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.textL } }, showTips ? "\u25B2" : "\u25BC")), showTips && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7 } }, RUN_TIPS.map((tip, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { background: C.card, borderRadius: 11, padding: "12px 14px", marginBottom: 7, boxShadow: C.shadow, border: `1px solid ${C.border}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 34, height: 34, borderRadius: 9, background: C.oliveSoft, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 } }, tip.icon), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 4 } }, tip.title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.textM, lineHeight: 1.6 } }, tip.text)))))));
+  }
+  function SettingsTab({ badDay, setBadDay, setOnboardingDone }) {
+    const [userName, setUserName] = useLS("userName", "Маша");
+    const [startFerritin, setStartFerritin] = useLS("startFerritin", "");
+    const [currentFerritin, setCurrentFerritin] = useLS("currentFerritin", "");
+    const [goalKcal, setGoalKcal] = useLS("nKcal", 1750);
+    const [goalWt, setGoalWt] = useLS("nGW", 52.5);
+    const [curWt, setCurWt] = useLS("nCW", 54);
+    const [proteinGoal, setProteinGoal] = useLS("proteinGoal", 90);
+    const [waterGoal, setWaterGoal] = useLS("waterGoal", 8);
+    const [mealTimes, setMealTimes] = useLS("mealTimes", { b: "09:30", l: "14:00", s: "17:00", d: "19:00" });
+    const [doctors, setDoctors] = useLS("doctorsV1", [
+      { id: "d1", spec: "Трихолог", name: "", phone: "", lastVisit: "", note: "" },
+      { id: "d2", spec: "Гастроэнтеролог", name: "", phone: "", lastVisit: "", note: "" },
+      { id: "d3", spec: "Гинеколог", name: "", phone: "", lastVisit: "", note: "" },
+      { id: "d4", spec: "Психотерапевт", name: "", phone: "", lastVisit: "", note: "" },
+    ]);
+    const [saved, setSaved] = useState(false);
+    const [activeSec, setActiveSec] = useState("profile");
+
+    const save = () => {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    };
+
+    const resetOnboarding = () => {
+      if (!confirm("Сбросить onboarding? Приложение спросит дату начала пачки Ярины и имя заново.")) return;
+      try { localStorage.removeItem("onboardingDone"); } catch {}
+      setOnboardingDone(false);
+    };
+
+    const exportData = () => {
+      try {
+        const d = {};
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          d[k] = localStorage.getItem(k);
+        }
+        const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const today = new Date().toISOString().slice(0, 10);
+        a.href = url; a.download = `fox_plan_backup_${today}.json`; a.click();
+        // Записываем дату последнего бэкапа
+        try { localStorage.setItem("lastBackupAt", JSON.stringify(new Date().toISOString())); } catch {}
+      } catch { alert("Ошибка экспорта"); }
+    };
+
+    const importData = (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = (ev) => {
+        try {
+          const d = JSON.parse(ev.target.result);
+          Object.entries(d).forEach(([k, v]) => localStorage.setItem(k, v));
+          alert("Восстановлено! Перезагрузи страницу.");
+        } catch { alert("Ошибка импорта."); }
+      };
+      r.readAsText(f);
+    };
+
+    const inputStyle = {
+      width: "100%", padding: "10px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`,
+      background: C.bg, fontSize: 14, fontFamily: "inherit", color: C.text,
+      minWidth: 0, boxSizing: "border-box", outline: "none"
+    };
+
+    const Card = ({ children, style = {} }) => React.createElement("div", {
+      style: { background: C.card, borderRadius: 12, padding: "14px", marginBottom: 10, border: `0.5px solid ${C.border}`, ...style }
+    }, children);
+
+    const Field = ({ label, children, hint }) => React.createElement("div", { style: { marginBottom: 12 } },
+      React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 5 } }, label),
+      children,
+      hint && React.createElement("div", { style: { fontSize: 11, color: C.textL, marginTop: 4, lineHeight: 1.4 } }, hint)
+    );
+
+    const sections = [
+      { id: "profile", l: "👤 Профиль" },
+      { id: "cycle", l: "🌸 Цикл" },
+      { id: "nutrition", l: "🍽 Питание" },
+      { id: "doctors", l: "👩‍⚕️ Врачи" },
+      { id: "notify", l: "🔔 Состояние" },
+      { id: "data", l: "💾 Данные" },
+    ];
+
+    return React.createElement("div", null,
+      // Секции — tabs
+      React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 14, overflowX: "auto", paddingBottom: 2 } },
+        sections.map(s => React.createElement("button", { key: s.id, onClick: () => setActiveSec(s.id),
+          style: { padding: "8px 11px", borderRadius: 8, border: `0.5px solid ${activeSec === s.id ? C.olive : C.border}`,
+            background: activeSec === s.id ? C.olive : C.card, color: activeSec === s.id ? "#fff" : C.textM,
+            fontSize: 11, fontWeight: activeSec === s.id ? 600 : 500, cursor: "pointer",
+            fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0 }
+        }, s.l))
+      ),
+
+      // ПРОФИЛЬ
+      activeSec === "profile" && Card({ children: React.createElement(React.Fragment, null,
+        Field({ label: "Имя", children: React.createElement("input", {
+          value: userName, onChange: e => setUserName(e.target.value), type: "text", style: inputStyle
+        })}),
+        Field({ label: "Текущий вес (кг)", children: React.createElement("input", {
+          type: "number", value: curWt, onChange: e => setCurWt(e.target.value), step: "0.5", style: inputStyle
+        })}),
+        Field({ label: "Целевой вес (кг)", children: React.createElement("input", {
+          type: "number", value: goalWt, onChange: e => setGoalWt(e.target.value), step: "0.5", style: inputStyle
+        })}),
+        Field({ label: "Стартовый ферритин (мкг/л)", children: React.createElement("input", {
+          type: "number", value: startFerritin, onChange: e => setStartFerritin(e.target.value), placeholder: "28", style: inputStyle
+        }), hint: "Стартовый ферритин для отслеживания прогресса. Норма 30-100." }),
+        Field({ label: "Текущий ферритин", children: React.createElement("input", {
+          type: "number", value: currentFerritin, onChange: e => setCurrentFerritin(e.target.value), placeholder: "—", style: inputStyle
+        }), hint: "Обновляй после каждых анализов чтобы видеть динамику в трендах." })
+      )}),
+
+      // ЦИКЛ — просто ссылка на CycleSubTab
+      activeSec === "cycle" && Card({ children: React.createElement(React.Fragment, null,
+        React.createElement("div", { style: { fontSize: 12, color: C.textM, lineHeight: 1.6, marginBottom: 12 } },
+          "Настройки цикла и пачки Ярины — в разделе Здоровье → Цикл. Там можно поменять дату начала пачки, прогноз месячных и уточнить фактические даты."
+        )
+      )}),
+
+      // ПИТАНИЕ
+      activeSec === "nutrition" && Card({ children: React.createElement(React.Fragment, null,
+        Field({ label: "Цель белка (г / день)", children: React.createElement("input", {
+          type: "number", value: proteinGoal, onChange: e => setProteinGoal(Number(e.target.value)), min: "50", max: "200", style: inputStyle
+        }), hint: "По плану: 90 г/день для волос и спорта (1.6 г/кг)." }),
+        Field({ label: "Цель воды (стаканов)", children: React.createElement("input", {
+          type: "number", value: waterGoal, onChange: e => setWaterGoal(Number(e.target.value)), min: "4", max: "20", style: inputStyle
+        }), hint: "~30 мл / кг веса + по стакану на каждую чашку кофе/чая." }),
+        Field({ label: "Калории / день", children: React.createElement("input", {
+          type: "number", value: goalKcal, onChange: e => setGoalKcal(e.target.value), min: "1200", max: "3000", style: inputStyle
+        })}),
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginTop: 14, marginBottom: 8 } }, "Время приёмов пищи"),
+        [{ k: "b", l: "Завтрак" }, { k: "l", l: "Обед" }, { k: "s", l: "Перекус" }, { k: "d", l: "Ужин" }].map(m =>
+          React.createElement("div", { key: m.k, style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 } },
+            React.createElement("div", { style: { fontSize: 12, color: C.textM, width: 70, flexShrink: 0 } }, m.l),
+            React.createElement("input", { type: "time", value: mealTimes[m.k],
+              onChange: e => setMealTimes({ ...mealTimes, [m.k]: e.target.value }),
+              style: { ...inputStyle, flex: 1, padding: "8px 10px", fontSize: 13 }
+            })
+          )
+        )
+      )}),
+
+      // ВРАЧИ
+      activeSec === "doctors" && React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 12, color: C.textM, lineHeight: 1.6, marginBottom: 10, padding: "0 4px" } },
+          "Контакты врачей всегда под рукой — чтобы быстро написать или показать на приёме у другого врача."
+        ),
+        doctors.map((doc, di) => Card({ children: React.createElement(React.Fragment, null,
+          React.createElement("div", { style: { fontSize: 12, color: C.oliveDeep, fontWeight: 600, marginBottom: 8 } }, doc.spec),
+          Field({ label: "ФИО", children: React.createElement("input", {
+            value: doc.name, onChange: e => {
+              const upd = [...doctors]; upd[di] = { ...doc, name: e.target.value }; setDoctors(upd);
+            }, type: "text", placeholder: "Имя Фамилия", style: inputStyle
+          })}),
+          Field({ label: "Телефон", children: React.createElement("input", {
+            value: doc.phone, onChange: e => {
+              const upd = [...doctors]; upd[di] = { ...doc, phone: e.target.value }; setDoctors(upd);
+            }, type: "tel", placeholder: "+48 ...", style: inputStyle
+          })}),
+          Field({ label: "Последний визит", children: React.createElement("input", {
+            type: "date", value: doc.lastVisit, onChange: e => {
+              const upd = [...doctors]; upd[di] = { ...doc, lastVisit: e.target.value }; setDoctors(upd);
+            }, style: inputStyle
+          })}),
+          Field({ label: "Заметки", children: React.createElement("textarea", {
+            value: doc.note, onChange: e => {
+              const upd = [...doctors]; upd[di] = { ...doc, note: e.target.value }; setDoctors(upd);
+            }, placeholder: "Назначения, рекомендации...",
+            style: { ...inputStyle, minHeight: 50, padding: "10px 12px", resize: "vertical" }
+          })})
+        ) }))
+      ),
+
+      // СОСТОЯНИЕ / УВЕДОМЛЕНИЯ
+      activeSec === "notify" && Card({ children: React.createElement(React.Fragment, null,
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
+          React.createElement("div", { style: { flex: 1 } },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 500, color: C.text } }, "Плохо себя сегодня"),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 3, lineHeight: 1.5 } },
+              "Тренировки заменятся на прогулку. Сбросится в полночь."
+            )
+          ),
+          React.createElement("button", { onClick: () => setBadDay(!badDay),
+            style: { width: 48, height: 28, borderRadius: 14, border: "none",
+              background: badDay ? C.olive : C.border, cursor: "pointer", position: "relative", flexShrink: 0, fontFamily: "inherit" }
+          },
+            React.createElement("div", { style: {
+              position: "absolute", top: 2, left: badDay ? 22 : 2, width: 24, height: 24, borderRadius: "50%",
+              background: "#fff", transition: "left .15s"
+            }})
+          )
+        )
+      )}),
+
+      // ДАННЫЕ
+      activeSec === "data" && React.createElement("div", null,
+        Card({ children: React.createElement(React.Fragment, null,
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 } }, "Резервная копия"),
+          // Статус последнего бэкапа
+          (() => {
+            let last = null;
+            try {
+              const raw = localStorage.getItem("lastBackupAt");
+              if (raw) last = new Date(JSON.parse(raw));
+            } catch {}
+            if (!last) {
+              return React.createElement("div", {
+                style: { padding: "8px 11px", background: C.warnSoft, border: `0.5px solid ${C.warn}44`,
+                  borderRadius: 8, marginBottom: 10 }
+              },
+                React.createElement("div", { style: { fontSize: 11, color: C.warn, fontWeight: 600 } }, "⚠ Бэкапа ещё не было"),
+                React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } },
+                  "Сделай первую копию прямо сейчас — занимает 5 секунд."
+                )
+              );
+            }
+            const daysAgo = Math.floor((Date.now() - last.getTime()) / 86400000);
+            const isOld = daysAgo > 7;
+            return React.createElement("div", {
+              style: { padding: "8px 11px", background: isOld ? C.warnSoft : C.sandSoft,
+                border: `0.5px solid ${isOld ? C.warn + "44" : C.sand + "44"}`, borderRadius: 8, marginBottom: 10 }
+            },
+              React.createElement("div", { style: { fontSize: 11, color: isOld ? C.warn : C.sandDeep, fontWeight: 600 } },
+                isOld ? `⚠ Последний бэкап ${daysAgo} дн. назад` : `✓ Последний бэкап ${daysAgo === 0 ? "сегодня" : daysAgo === 1 ? "вчера" : daysAgo + " дн. назад"}`
+              ),
+              React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } },
+                last.toLocaleString("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })
+              )
+            );
+          })(),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.6, marginBottom: 10 } },
+            "Данные хранятся в Safari на iPhone. Делай копию раз в неделю — это защитит от случайного сброса при очистке Safari или если iOS почистит «неактивные» сайты."
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+            React.createElement("button", { onClick: exportData,
+              style: { flex: 1, padding: "10px", borderRadius: 9, background: C.oliveSoft, border: `0.5px solid ${C.olive}44`,
+                color: C.oliveDeep, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+            }, "⬇ Скачать копию"),
+            React.createElement("label", {
+              style: { flex: 1, padding: "10px", borderRadius: 9, background: C.sandSoft, border: `0.5px solid ${C.sand}44`,
+                color: C.sandDeep, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textAlign: "center" }
+            },
+              "⬆ Восстановить",
+              React.createElement("input", { type: "file", accept: ".json", onChange: importData, style: { display: "none" } })
+            )
+          ),
+          // Инструкция как куда сохранять и как восстанавливать
+          React.createElement("div", { style: { padding: "10px 12px", background: C.bgWarm, borderRadius: 8, fontSize: 11, color: C.textM, lineHeight: 1.6 } },
+            React.createElement("div", { style: { fontWeight: 600, color: C.text, marginBottom: 4 } }, "📁 Куда сохранять бэкап"),
+            "После нажатия «Скачать копию» Safari предложит куда сохранить. Рекомендую: ",
+            React.createElement("br"),
+            "• ", React.createElement("b", null, "Файлы → iCloud Drive"), " — синхронизируется автоматически",
+            React.createElement("br"),
+            "• ", React.createElement("b", null, "Telegram → Избранное"), " — самый быстрый доступ",
+            React.createElement("br"),
+            React.createElement("br"),
+            React.createElement("div", { style: { fontWeight: 600, color: C.text, marginBottom: 4 } }, "🔄 Как восстановить"),
+            "1. Нажми ⬆ Восстановить", React.createElement("br"),
+            "2. Выбери JSON-файл из Файлов / Telegram", React.createElement("br"),
+            "3. Перезагрузи страницу", React.createElement("br"),
+            React.createElement("br"),
+            React.createElement("b", { style: { color: C.warn } }, "⚠ Важно:"), " бэкап ", React.createElement("b", null, "заменяет"), " все текущие данные. Если после потери открыла приложение — восстанавливай сразу, до того как что-то отметишь."
+          )
+        )}),
+        Card({ children: React.createElement(React.Fragment, null,
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 } }, "Сбросить настройки"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.6, marginBottom: 10 } },
+            "Если изменилась дата начала пачки Ярины, ферритин или имя — можешь пройти стартовый опрос заново."
+          ),
+          React.createElement("button", { onClick: resetOnboarding,
+            style: { width: "100%", padding: "10px", borderRadius: 9, background: C.bgWarm, border: `0.5px solid ${C.border}`,
+              color: C.textM, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }
+          }, "Пройти onboarding заново")
+        )})
+      ),
+
+      // Сохранить (общая кнопка для всех секций)
+      React.createElement("button", { onClick: save,
+        style: { width: "100%", padding: "13px", borderRadius: 12, background: saved ? C.sand : C.olive, border: "none",
+          color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", transition: "background .2s",
+          marginTop: 6, marginBottom: 14 }
+      }, saved ? "✓ Сохранено!" : "Сохранить настройки")
+    );
+  }
+  function MultiRing({ rings }) {
+    const base = 136, sw = 12, gap = 5, cx = 68;
+    return React.createElement("div", { style: { position: "relative", width: base, height: base, flexShrink: 0 } },
+      React.createElement("svg", { width: base, height: base, style: { transform: "rotate(-90deg)", position: "absolute", top: 0, left: 0 } },
+        rings.map((ring, i) => {
+          const r = cx - sw/2 - i * (sw + gap);
+          const circ = 2 * Math.PI * r;
+          const off = circ - Math.min(ring.pct, 100) / 100 * circ;
+          return React.createElement(React.Fragment, { key: i },
+            React.createElement("circle", { cx, cy: cx, r, fill: "none", stroke: ring.color + "28", strokeWidth: sw }),
+            React.createElement("circle", { cx, cy: cx, r, fill: "none", stroke: ring.color, strokeWidth: sw,
+              strokeDasharray: circ, strokeDashoffset: off, strokeLinecap: "round",
+              style: { transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)" } })
+          );
+        })
+      ),
+      React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 } },
+        React.createElement("div", { style: { fontSize: 20, lineHeight: 1 } }, "🌸")
+      )
+    );
+  }
+
+  function TodayTab({ todayDow, DR, setTab, workoutDays, cycleAnchor, packAnchor, periodOverrides, badDay, userName }) {
+    const [showDiary, setShowDiary] = useState(false);
+    const [showSchedule, setShowSchedule] = useState(false);
+    const [showTrackers, setShowTrackers] = useLS("todayShowTrackers", false);
+    const [moodLog] = useLS("moodDiaryV1", {});
+
+    // Активность дня
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const activity = getTodayActivity({
+      date: today, cycleAnchor, periodOverrides, workoutDays, badDay
+    });
+
+    // Дневник сегодня — заполнен или нет
+    const todayDiaryKey = today.toISOString().slice(0, 10);
+    const diaryDone = !!moodLog[todayDiaryKey];
+
+    // Таблетки сегодня — для AlertsBanner (единый фильтр)
+    const todayKey = new Date().toLocaleDateString("ru-RU");
+    let activeCount = 0;
+    let takenCount = 0;
+    try {
+      const taken = JSON.parse(localStorage.getItem("pillsTaken_" + todayKey) || "{}");
+      const active = activePillsOn(today, packAnchor);
+      activeCount = active.length;
+      takenCount = active.filter(p => taken[p.id]).length;
+    } catch {}
+
+    // Текущий блок плана — null если план ещё не начался или уже закончился
+    const currentBlock = (() => {
+      for (let i = 0; i < PLAN_BLOCKS.length; i++) {
+        const b = PLAN_BLOCKS[i];
+        const from = mkd(b.from);
+        const to = mkd(b.to); to.setHours(23, 59, 59, 999);
+        if (today >= from && today <= to) {
+          const dayInBlock = Math.floor((today - from) / 86400000) + 1;
+          const blockTotal = Math.floor((to - from) / 86400000) + 1;
+          return { ...b, dayInBlock, blockTotal };
+        }
+      }
+      return null;
+    })();
+
+    // Курс тазового дна — активен ли
+    const pelvicActive = today >= KEY_DATES.pelvicStart && today <= KEY_DATES.pelvicEnd;
+    const pelvicStartLabel = today < KEY_DATES.pelvicStart
+      ? "с " + KEY_DATES.pelvicStart.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })
+      : null;
+
+    // До месячных (кровотечение отмены) — считаем от пачки
+    const packNumNow = packAnchor ? Math.floor((today - mkd(packAnchor)) / 86400000 / CYCLE_LEN) + 1 : 1;
+    let daysToPeriod = 0;
+    if (packAnchor) {
+      for (let n = packNumNow; n <= packNumNow + 1; n++) {
+        const ps = (periodOverrides && periodOverrides[n]) ? mkd(periodOverrides[n]) : getPredictedPeriodStart(n, packAnchor);
+        const diff = Math.round((ps - today) / 86400000);
+        if (diff >= 0) { daysToPeriod = diff; break; }
+      }
+    }
+    const showPeriodAlert = daysToPeriod >= 1 && daysToPeriod <= 3;
+
+    // Состояние плана — до старта / идёт / после конца
+    const beforePlan = today < KEY_DATES.planStart;
+    const afterPlan = today > KEY_DATES.planEnd;
+    // Точный расчёт дней до старта — оба объекта 00:00 местного времени
+    const daysToStart = beforePlan
+      ? Math.round((KEY_DATES.planStart - today) / 86400000)
+      : 0;
+
+    const activityClickable = ["gym_a", "gym_b", "gym_c", "run"].includes(activity.kind);
+
+    return React.createElement("div", null,
+      // Обратный отсчёт до старта плана (если ещё не началось)
+      beforePlan && React.createElement("div", {
+        style: { background: C.card, border: `1.5px solid ${C.olive}`, borderRadius: 12, padding: "13px 15px",
+          marginBottom: 10, position: "relative", overflow: "hidden" }
+      },
+        React.createElement("div", { style: { position: "absolute", right: -6, top: -4, opacity: 0.18, pointerEvents: "none" } },
+          React.createElement(FoxImage, { kind: "main", size: 60 })
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.oliveDeep, fontWeight: 600, position: "relative" } }, "🌱 ДО СТАРТА ПЛАНА"),
+        React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: C.text, marginTop: 3, position: "relative" } },
+          daysToStart === 0 ? "Сегодня!" : daysToStart === 1 ? "Завтра!" :
+            `${daysToStart} ${daysToStart >= 2 && daysToStart <= 4 ? 'дня' : 'дней'}`
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 4, lineHeight: 1.5, position: "relative" } },
+          "Приём по плану стартует 30 мая (суббота). Сегодня — привычный режим. К старту подготовь: Форлакс и Zinkorot под рукой, будильник на 8:00, бутылка воды."
+        )
+      ),
+
+      // Алерты
+      React.createElement(AlertsBanner, { activePillsCount: activeCount, takenCount }),
+      React.createElement(AnalysisReminder, null),
+      React.createElement(BackupReminder, { setTab }),
+
+      // Предупреждение о близких месячных
+      showPeriodAlert && React.createElement("div", {
+        style: { padding: "10px 13px", background: C.pinkSoft, border: `0.5px solid ${C.pink}55`,
+          borderRadius: 10, marginBottom: 10 }
+      },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.pink, marginBottom: 2 } },
+          "🌸 Скоро месячные — через ", daysToPeriod, " ", daysToPeriod === 1 ? "день" : "дня"
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } },
+          "Заранее: тампоны/прокладки, болеутоляющее если нужно. В дни 1-3 — прогулка вместо зала."
+        )
+      ),
+
+      // Bad day режим
+      badDay && React.createElement("div", {
+        style: { padding: "10px 13px", background: C.bgWarm, border: `0.5px solid ${C.border}`,
+          borderRadius: 10, marginBottom: 10 }
+      },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM } }, "💛 «Плохо себя сегодня» включён"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.5 } },
+          "Тренировки → прогулка. Выключить в Настройках."
+        )
+      ),
+
+      // Окно для железа (кофе/чай/молочное) — только если железо начато
+      !beforePlan && React.createElement(IronWindow, null),
+
+      // Дневник состояния
+      !diaryDone && !showDiary && React.createElement("div", {
+        style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10,
+          display: "flex", justifyContent: "space-between", alignItems: "center" }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "Как ты сегодня?"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "2 минуты — для трендов")
+        ),
+        React.createElement("button", { onClick: () => setShowDiary(true),
+          style: { padding: "8px 14px", borderRadius: 8, background: C.olive, border: "none",
+            color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+        }, "Заполнить")
+      ),
+      diaryDone && !showDiary && React.createElement("div", {
+        style: { background: C.sandSoft, border: `0.5px solid ${C.sand}33`, borderRadius: 10, padding: "9px 13px", marginBottom: 10,
+          display: "flex", justifyContent: "space-between", alignItems: "center" }
+      },
+        React.createElement("div", { style: { fontSize: 11, color: C.sandDeep, fontWeight: 500 } }, "✓ Дневник сегодня заполнен"),
+        React.createElement("button", { onClick: () => setShowDiary(true),
+          style: { background: "none", border: "none", fontSize: 11, color: C.textM, cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }
+        }, "изменить")
+      ),
+      showDiary && React.createElement(MoodDiary, { onClose: () => setShowDiary(false) }),
+
+      // Режим дня (компактный таймлайн) — показываем ВСЕГДА, включая до старта плана
+      React.createElement(DayScheduleCard, {
+        cycleAnchor, periodOverrides, workoutDays, packAnchor,
+        onOpen: () => setShowSchedule(true)
+      }),
+      showSchedule && React.createElement(FullScheduleModal, {
+        onClose: () => setShowSchedule(false),
+        workoutDays, cycleAnchor, packAnchor, periodOverrides
+      }),
+
+      // Таблетки (compact)
+      React.createElement(PillsModule, { compact: true, cycleAnchor, packAnchor }),
+
+      // Активность дня (только если план начался и это что-то осмысленное)
+      !beforePlan && React.createElement("div", {
+        style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 10,
+          cursor: activityClickable ? "pointer" : "default" },
+        onClick: activityClickable ? () => setTab("sport") : undefined
+      },
+        React.createElement("div", { style: { display: "flex", gap: 11, alignItems: "flex-start" } },
+          React.createElement("div", { style: { fontSize: 24, flexShrink: 0 } }, activity.icon),
+          React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginBottom: 2 } }, "Активность сегодня"),
+            React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: C.text } }, activity.label),
+            React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 4, lineHeight: 1.5 } }, activity.hint)
+          ),
+          activityClickable && React.createElement("div", { style: { fontSize: 14, color: C.textL, flexShrink: 0, alignSelf: "center" } }, "→")
+        )
+      ),
+
+      // Второстепенные трекеры — свёрнуты по умолчанию, чтобы не перегружать экран
+      React.createElement("button", {
+        onClick: () => setShowTrackers(!showTrackers),
+        "aria-expanded": showTrackers,
+        style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+          background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: "12px 14px",
+          marginBottom: 10, cursor: "pointer", fontFamily: "inherit" }
+      },
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: C.text } }, "📊 Трекеры: белок, вода, сон, шаги"),
+        React.createElement("span", { "aria-hidden": "true", style: { fontSize: 12, color: C.textL } }, showTrackers ? "Скрыть ▲" : "Показать ▼")
+      ),
+      showTrackers && React.createElement("div", { className: "ux-enter" },
+        // Трекер белка
+        React.createElement(ProteinTracker, null),
+        // Трекер воды
+        React.createElement(WaterTracker, null),
+        // Трекер сна
+        React.createElement(SleepTracker, null),
+        // Трекер шагов
+        React.createElement(StepsTracker, null)
+      ),
+
+      // Курс таз. дна — мини-карточка если активен
+      pelvicActive && React.createElement("div", {
+        onClick: () => setTab("sport"),
+        style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "10px 13px",
+          marginBottom: 10, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, "🌸 Курс таз. дна сегодня"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "30 минут · отметить в Спорте")
+        ),
+        React.createElement("div", { style: { fontSize: 14, color: C.textL } }, "→")
+      ),
+
+      // Текущий блок плана
+      currentBlock && React.createElement("div", {
+        style: { background: C.card, border: `1.5px solid ${C.olive}`, borderRadius: 12, padding: "12px 14px",
+          cursor: "pointer", position: "relative", overflow: "hidden" },
+        onClick: () => setTab("plan")
+      },
+        React.createElement("div", { style: { position: "absolute", right: -8, top: -4, opacity: 0.15, pointerEvents: "none" } },
+          React.createElement(FoxImage, { kind: "main", size: 56 })
+        ),
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, position: "relative" } },
+          React.createElement("div", { style: { fontSize: 11, color: C.oliveDeep, fontWeight: 600 } }, "НЕДЕЛЯ ", currentBlock.n, " · день ", currentBlock.dayInBlock, "/", currentBlock.blockTotal),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM } }, currentBlock.title)
+        ),
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4, position: "relative" } }, currentBlock.subtitle),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5, position: "relative" } }, currentBlock.goal.substring(0, 100), currentBlock.goal.length > 100 ? "..." : "")
+      )
+    );
+  }
+
+  // ===========================================================================
+  // CompatibilityMatrix — таблица совместимости препаратов и веществ.
+  // Группирована по препаратам, для каждого — что можно (✓) и что нельзя (✕ с интервалом).
+  // ===========================================================================
+  function CompatibilityMatrix() {
+    const sections = [
+      {
+        name: "Железо · Gentle Iron",
+        color: "#7A4A1A",
+        bg: C.barkSoft,
+        items: [
+          { with: "Витамин C", ok: true, note: "вместе — усиливает усвоение" },
+          { with: "Перфектил", ok: false, note: "разрыв 2 ч (цинк в составе)" },
+          { with: "Цинк", ok: false, note: "разрыв 2 ч" },
+          { with: "Кофе / чай", ok: false, note: "разрыв 1 ч (танины блокируют)" },
+          { with: "Молочное", ok: false, note: "разрыв 2 ч (кальций блокирует)" },
+          { with: "Дуксет / Ярина", ok: true, note: "можно вместе" },
+        ]
+      },
+      {
+        name: "Перфектил",
+        color: "#3B6D11",
+        bg: C.sandSoft,
+        items: [
+          { with: "С едой", ok: true, note: "обязательно, иначе тошнота" },
+          { with: "Витамин A / E", ok: false, note: "уже в составе — перегруз опасен" },
+          { with: "Натощак", ok: false, note: "тошнота, раздражение ЖКТ" },
+        ]
+      },
+      {
+        name: "Ярина",
+        color: "#534AB7",
+        bg: "#EEEDFE",
+        items: [
+          { with: "Антибиотики", ok: false, note: "снижает эффективность — обсудить с врачом" },
+          { with: "Зверобой", ok: false, note: "снижает эффективность КОК" },
+          { with: "Грейпфрутовый сок", ok: false, note: "повышает уровень эстрогенов" },
+          { with: "Алкоголь умеренно", ok: true, note: "ок, но не злоупотреблять" },
+        ]
+      },
+      {
+        name: "Витамин D",
+        color: "#BA7517",
+        bg: C.oliveSoft,
+        items: [
+          { with: "С жирной едой", ok: true, note: "усваивается с жиром" },
+          { with: "Каждый день", ok: false, note: "только пн/ср/сб (3× в неделю)" },
+        ]
+      },
+      {
+        name: "Цинк",
+        color: "#7A4A1A",
+        bg: C.barkSoft,
+        items: [
+          { with: "С ужином", ok: true, note: "лучше с едой — без тошноты" },
+          { with: "Железо", ok: false, note: "разрыв минимум 2 ч" },
+        ]
+      },
+      {
+        name: "A+E Medana",
+        color: "#7A4A1A",
+        bg: C.barkSoft,
+        items: [
+          { with: "С жирной едой", ok: true, note: "жирорастворимые — нужна еда с жирами" },
+          { with: "Витамин C / селен", ok: false, note: "лучше разнести по времени" },
+          { with: "Омега + Ярина", ok: true, note: "можно, но всё вместе слегка разжижает кровь" },
+          { with: "Перфектил", ok: false, note: "A/E уже есть в составе — не дублировать впритык" },
+        ]
+      },
+    ];
+
+    return React.createElement("div", null,
+      // Главное правило сверху
+      React.createElement("div", { style: { background: C.warnSoft, border: `0.5px solid ${C.warn}66`, borderRadius: 10, padding: "11px 13px", marginBottom: 14 } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.warn, marginBottom: 4 } }, "⚠ Главное правило"),
+        React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.55 } }, "Железо не сочетать с Перфектилом, цинком, кофе, чаем, молочным — разрыв минимум 2 часа. Это самое важное, всё остальное менее критично.")
+      ),
+
+      sections.map((s, si) => React.createElement("div", { key: si, style: { marginBottom: 14 } },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.textM, marginBottom: 7, letterSpacing: 0.3, textTransform: "uppercase" } }, s.name),
+        React.createElement("div", { style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, overflow: "hidden" } },
+          s.items.map((item, ii) => React.createElement("div", {
+            key: ii,
+            style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 13px",
+              borderBottom: ii < s.items.length - 1 ? `0.5px solid ${C.border}` : "none", gap: 10 }
+          },
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+              React.createElement("div", { style: { fontSize: 13, color: C.text } }, item.with),
+              React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, lineHeight: 1.4 } }, item.note)
+            ),
+            React.createElement("div", { style: {
+              fontSize: 12, fontWeight: 600, color: item.ok ? C.ok : C.warn, flexShrink: 0,
+              padding: "3px 9px", borderRadius: 6, background: (item.ok ? C.ok : C.warn) + "18"
+            } }, item.ok ? "✓" : "✕")
+          ))
+        )
+      )),
+
+      // Универсальная плашка снизу
+      React.createElement("div", { style: { background: C.infoSoft, borderRadius: 9, padding: "10px 13px", border: `0.5px solid ${C.info}33` } },
+        React.createElement("div", { style: { fontSize: 11, color: C.info, lineHeight: 1.6 } }, "💡 Дуксет, Омега, Био Фимейл, Ниацинамид, Мелатонин, Цистениум — совместимы со всем основным. Их можно принимать в любое время без особых ограничений.")
+      )
+    );
+  }
+
+  // ===========================================================================
+  // NormalFAQ — раздел «Это нормально». FAQ для тревожных моментов.
+  // ===========================================================================
+  function NormalFAQ() {
+    const [open, setOpen] = useState(null);
+    const items = [
+      {
+        q: "Чёрный стул от железа",
+        a: "Это нормально, а не кровь. Препараты железа меняют цвет стула — он может стать тёмным, почти чёрным. Алая кровь — это другое, к врачу. Темнота — норма."
+      },
+      {
+        q: "Не вижу результата по волосам через месяц",
+        a: "Это нормально. Видимые изменения начинаются через 1.5–2 месяца. Первая цель плана — остановить выпадение, а не отрастить. Не считай волосы каждый день — это усиливает тревожную фиксацию."
+      },
+      {
+        q: "Курс тазового дна сначала неудобный",
+        a: "Это нормально. Гипертонусной мышце сложно расслабиться — это и есть проблема. Если боль усилилась — снизь интенсивность до 4–5 раз в неделю, и фокус на расслаблении, не на усилии."
+      },
+      {
+        q: "Тошнота от Перфектила",
+        a: "Чаще всего — потому что принят натощак или с лёгким перекусом. Перфектил нужно с полноценной едой (полный обед). Если тошнит даже с едой — поговори с терапевтом."
+      },
+      {
+        q: "Запор не уходит сразу после Форлакса",
+        a: "Это нормально. Форлакс работает мягко через сутки. Если стул стал реже 1 раза в 3 дня после старта — обсудить дозу. Если началась кровь — к проктологу."
+      },
+      {
+        q: "Прибавка веса на Ярине",
+        a: "В первые 2-3 месяца возможна задержка воды — это не жир. Через 3 месяца обычно стабилизируется. Если прибавка более 3 кг и держится — обсудить с гинекологом."
+      },
+      {
+        q: "Усталость после старта железа",
+        a: "Часто наоборот — энергия растёт. Но если есть тошнота, тяжесть в желудке — попробуй принимать перед сном вместо вечера. Или с большим количеством воды."
+      },
+      {
+        q: "Тревога утром после Дуксета",
+        a: "Иногда бывает в первые недели. Если держится дольше 2-3 недель — обсуди с психотерапевтом дозу или время приёма."
+      },
+      {
+        q: "Слабость в первые недели тренировок (с 15 июня)",
+        a: "Ферритин ещё восстанавливается, тело адаптируется к Дуксету и Перфектилу. Бери минимальные веса, верхняя граница повторов. Через 2-3 недели станет легче."
+      },
+    ];
+
+    return React.createElement("div", null,
+      // Шапка с грибочками
+      React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center", marginBottom: 14, padding: "11px 13px", background: C.sandSoft, borderRadius: 10, border: `0.5px solid ${C.sand}33` } },
+        React.createElement(FoxImage, { kind: "mushrooms", size: 50, opacity: 0.9 }),
+        React.createElement("div", { style: { flex: 1 } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: C.sandDeep, marginBottom: 3 } }, "Это нормально"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, "Частые тревожные моменты и почему они не должны пугать.")
+        )
+      ),
+
+      items.map((it, i) => React.createElement("div", {
+        key: i,
+        style: { background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 10, marginBottom: 6, overflow: "hidden" }
+      },
+        React.createElement("button", {
+          onClick: () => setOpen(open === i ? null : i),
+          style: { width: "100%", padding: "12px 13px", background: "none", border: "none", cursor: "pointer",
+            display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit", textAlign: "left", gap: 10 }
+        },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 500, color: C.text, flex: 1 } }, it.q),
+          React.createElement("div", { style: { fontSize: 14, color: C.textL, flexShrink: 0 } }, open === i ? "▲" : "▼")
+        ),
+        open === i && React.createElement("div", { style: { padding: "0 13px 13px", fontSize: 12, color: C.textM, lineHeight: 1.6 } }, it.a)
+      ))
+    );
+  }
+
+  // ===========================================================================
+  // TrendsTab — графики из дневника состояния
+  // ===========================================================================
+  function TrendsTab() {
+    const [log] = useLS("moodDiaryV1", {});
+    const [range, setRange] = useState(30);
+
+    // Собираем последние N дней
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const entries = [];
+    for (let i = range - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      entries.push({ date: d, key, data: log[key] || null });
+    }
+    const filled = entries.filter(e => e.data && e.data.mood > 0);
+
+    // Если меньше 3 заполненных дней — показываем пустое состояние с лисой
+    if (filled.length < 3) {
+      return React.createElement("div", { style: { padding: "20px 16px", textAlign: "center" } },
+        React.createElement(FoxImage, { kind: "path", size: 280, style: { margin: "0 auto 18px", borderRadius: 12 } }),
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 6 } }, "Лиса только встала на тропу"),
+        React.createElement("div", { style: { fontSize: 12, color: C.textM, lineHeight: 1.6, maxWidth: 280, margin: "0 auto" } },
+          "Графики появятся когда заполнишь дневник состояния несколько дней. Сейчас заполнено: ", filled.length, " ", filled.length === 1 ? "день" : "дня", "."
+        )
+      );
+    }
+
+    // Простая SVG-линия для тренда
+    const LineChart = ({ values, color, max = 5, height = 56 }) => {
+      const width = 260;
+      const step = width / Math.max(1, values.length - 1);
+      const points = values.map((v, i) => `${i * step},${height - (v / max) * (height - 8) - 4}`).join(" ");
+      const lastY = height - (values[values.length - 1] / max) * (height - 8) - 4;
+      const lastX = (values.length - 1) * step;
+      return React.createElement("svg", { width: "100%", height, viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none" },
+        React.createElement("polyline", { points, fill: "none", stroke: color, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }),
+        React.createElement("circle", { cx: lastX, cy: lastY, r: 3, fill: color })
+      );
+    };
+
+    const moods = filled.map(e => e.data.mood);
+    const energies = filled.map(e => e.data.energy || 0);
+    const sleeps = filled.map(e => e.data.sleepH || 0);
+
+    const avgSleep = sleeps.length ? (sleeps.reduce((a, b) => a + b, 0) / sleeps.length).toFixed(1) : "—";
+    const moodTrend = moods.length >= 2 ? (moods[moods.length - 1] - moods[0]) : 0;
+    const trendLabel = moodTrend > 0.5 ? "↑ растёт" : moodTrend < -0.5 ? "↓ снижается" : "стабильно";
+    const trendColor = moodTrend > 0.5 ? C.ok : moodTrend < -0.5 ? C.warn : C.textM;
+
+    // ЖКТ — bar chart по неделям (упрощённо)
+    const gutCounts = { soft: 0, norm: 0, hard: 0, blood: 0, skip: 0 };
+    filled.forEach(e => { if (e.data.gut && gutCounts[e.data.gut] !== undefined) gutCounts[e.data.gut]++; });
+
+    return React.createElement("div", null,
+      // Range switcher
+      React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 12 } },
+        [7, 30, 90].map(r => React.createElement("button", {
+          key: r, onClick: () => setRange(r),
+          style: { flex: 1, padding: "7px 0", borderRadius: 7, border: `0.5px solid ${range === r ? C.olive : C.border}`,
+            background: range === r ? C.olive : C.card, fontSize: 12, fontWeight: 600,
+            color: range === r ? "#fff" : C.textM, cursor: "pointer", fontFamily: "inherit" }
+        }, r, " дн"))
+      ),
+
+      // Mood
+      React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "12px 13px", marginBottom: 9, border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, "😊 Настроение"),
+          React.createElement("div", { style: { fontSize: 11, color: trendColor, fontWeight: 600 } }, trendLabel)
+        ),
+        LineChart({ values: moods, color: C.olive })
+      ),
+
+      // Energy
+      React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "12px 13px", marginBottom: 9, border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 10 } }, "⚡ Энергия"),
+        LineChart({ values: energies, color: C.sand })
+      ),
+
+      // Sleep
+      React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "12px 13px", marginBottom: 9, border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text } }, "😴 Сон, ч"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM } }, "сред. ", avgSleep, " ч")
+        ),
+        LineChart({ values: sleeps, color: "#534AB7", max: 9 })
+      ),
+
+      // Gut
+      React.createElement("div", { style: { background: C.card, borderRadius: 10, padding: "12px 13px", border: `0.5px solid ${C.border}` } },
+        React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 10 } }, "💧 ЖКТ — распределение"),
+        React.createElement("div", { style: { display: "flex", gap: 4, height: 30, alignItems: "flex-end" } },
+          [
+            { l: "Кровь", v: gutCounts.blood, c: C.warn },
+            { l: "Твёрдый", v: gutCounts.hard, c: C.olive },
+            { l: "Мягкий", v: gutCounts.soft, c: C.ok },
+            { l: "Норма", v: gutCounts.norm, c: C.ok },
+            { l: "—", v: gutCounts.skip, c: C.textL },
+          ].map((g, i) => React.createElement("div", { key: i, style: { flex: 1, textAlign: "center" } },
+            React.createElement("div", {
+              style: { height: 20 + g.v * 4, background: g.c, borderRadius: 4, marginBottom: 4 }
+            }),
+            React.createElement("div", { style: { fontSize: 9, color: C.textL } }, g.l, " (", g.v, ")")
+          ))
+        )
+      )
+    );
+  }
+
+  // ===========================================================================
+  // OnboardingScreen — первый запуск, спросить дату начала пачки и ферритин.
+  // ===========================================================================
+  function OnboardingScreen({ onDone }) {
+    const [name, setName] = useState("Маша");
+    const [packAnchorVal, setPackAnchorVal] = useState(defaultPackAnchor());
+    const [ferritin, setFerritin] = useState("");
+    const [step, setStep] = useState(0);
+
+    const save = () => {
+      try {
+        localStorage.setItem("userName", JSON.stringify(name.trim() || "Маша"));
+        localStorage.setItem("packAnchorV2", JSON.stringify(packAnchorVal));
+        // cycleAnchor больше не запрашиваем отдельно — на Ярине он = якорю пачки.
+        localStorage.setItem("cycleAnchorV2", JSON.stringify(packAnchorVal));
+        if (ferritin) localStorage.setItem("startFerritin", JSON.stringify(Number(ferritin)));
+        localStorage.setItem("onboardingDone", "true");
+      } catch {}
+      onDone();
+    };
+
+    const wrap = (children) => React.createElement("div", {
+      style: { position: "fixed", inset: 0, background: C.bg, zIndex: 1000, padding: "32px 20px", overflow: "auto", boxSizing: "border-box" }
+    },
+      React.createElement("div", { style: { maxWidth: 380, margin: "0 auto" } }, children)
+    );
+
+    const dateInputStyle = {
+      width: "100%", padding: "11px 13px", borderRadius: 10, border: `0.5px solid ${C.border}`,
+      fontSize: 15, fontFamily: "inherit", background: C.card, color: C.text,
+      minWidth: 0, boxSizing: "border-box", outline: "none"
+    };
+
+    if (step === 0) {
+      return wrap(React.createElement("div", null,
+        React.createElement("div", { style: { textAlign: "center", marginBottom: 22 } },
+          React.createElement(FoxImage, { kind: "main", size: 160, style: { margin: "0 auto" } })
+        ),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 600, color: C.text, textAlign: "center", marginBottom: 8 } }, "Привет!"),
+        React.createElement("div", { style: { fontSize: 14, color: C.textM, textAlign: "center", lineHeight: 1.6, marginBottom: 22 } },
+          "Это твой план восстановления на 9 недель. Чтобы приложение знало где ты сейчас, ответь на пару вопросов."
+        ),
+        React.createElement("div", { style: { marginBottom: 16 } },
+          React.createElement("div", { style: { fontSize: 12, color: C.textM, marginBottom: 6 } }, "Как тебя зовут?"),
+          React.createElement("input", { value: name, onChange: e => setName(e.target.value),
+            style: { ...dateInputStyle, padding: "11px 13px" }
+          })
+        ),
+        React.createElement("button", { onClick: () => setStep(1),
+          style: { width: "100%", padding: "13px", borderRadius: 10, background: C.olive, border: "none",
+            color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+        }, "Дальше →")
+      ));
+    }
+
+    if (step === 1) {
+      const packDate = mkd(packAnchorVal);
+      const lastPill = new Date(packDate); lastPill.setDate(lastPill.getDate() + ACTIVE_PILLS - 1);
+      const nextPeriod = getPredictedPeriodStart(1, packAnchorVal);
+      const nextPeriodEnd = new Date(nextPeriod); nextPeriodEnd.setDate(nextPeriodEnd.getDate() + PERIOD_LENGTH - 1);
+      const breakStart = new Date(lastPill); breakStart.setDate(breakStart.getDate() + 1);
+      const fmt = d => d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+
+      return wrap(React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 20, fontWeight: 600, color: C.text, marginBottom: 8 } }, "Ярина и месячные"),
+        React.createElement("div", { style: { fontSize: 13, color: C.textM, lineHeight: 1.6, marginBottom: 18 } },
+          "На Ярине месячные — это кровотечение отмены в 7-дневный перерыв. Поэтому достаточно одной даты: когда была первая таблетка ", React.createElement("b", null, "текущей пачки"), "? Всё остальное приложение посчитает само."
+        ),
+        React.createElement("input", { type: "date", value: packAnchorVal, onChange: e => setPackAnchorVal(e.target.value),
+          "aria-label": "Дата первой таблетки текущей пачки",
+          style: { ...dateInputStyle, marginBottom: 16 }
+        }),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, lineHeight: 1.7, marginBottom: 18, padding: "11px 13px", background: C.bgWarm, borderRadius: 8 } },
+          "💊 Последняя таблетка пачки: ", React.createElement("b", { style: { color: C.olive } }, fmt(lastPill)), React.createElement("br"),
+          "⏸ Перерыв: с ", React.createElement("b", null, fmt(breakStart)), React.createElement("br"),
+          "🌸 Прогноз месячных: ", React.createElement("b", { style: { color: C.pink } }, fmt(nextPeriod), " — ", fmt(nextPeriodEnd)), React.createElement("br"),
+          React.createElement("span", { style: { fontStyle: "italic" } }, "Точную дату можно будет поправить в разделе «Здоровье → Цикл».")
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 8 } },
+          React.createElement("button", { onClick: () => setStep(0),
+            style: { flex: 1, padding: "13px", borderRadius: 10, background: C.bgWarm, border: `0.5px solid ${C.border}`,
+              color: C.textM, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }
+          }, "Назад"),
+          React.createElement("button", { onClick: () => setStep(2),
+            style: { flex: 2, padding: "13px", borderRadius: 10, background: C.olive, border: "none",
+              color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+          }, "Дальше →")
+        )
+      ));
+    }
+
+    if (step === 2) {
+      return wrap(React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 20, fontWeight: 600, color: C.text, marginBottom: 8 } }, "Стартовый ферритин"),
+        React.createElement("div", { style: { fontSize: 13, color: C.textM, lineHeight: 1.6, marginBottom: 18 } },
+          "Знаешь свой ферритин на старте? Можешь пропустить — спрошу позже. Это поможет отслеживать прогресс."
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", marginBottom: 6 } },
+          React.createElement("input", { type: "number", value: ferritin, onChange: e => setFerritin(e.target.value),
+            placeholder: "28",
+            style: { ...dateInputStyle, flex: 1 }
+          }),
+          React.createElement("span", { style: { fontSize: 13, color: C.textM } }, "мкг/л")
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: C.textL, marginBottom: 22, lineHeight: 1.5 } },
+          "Норма для женщин: 30—100. Можно пропустить и заполнить позже в Настройках."
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 8 } },
+          React.createElement("button", { onClick: () => setStep(1),
+            style: { flex: 1, padding: "13px", borderRadius: 10, background: C.bgWarm, border: `0.5px solid ${C.border}`,
+              color: C.textM, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }
+          }, "Назад"),
+          React.createElement("button", { onClick: save,
+            style: { flex: 2, padding: "13px", borderRadius: 10, background: C.olive, border: "none",
+              color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }
+          }, "Готово 🦊")
+        )
+      ));
+    }
+  }
+
+  // ===========================================================================
+  // AlertsBanner — баннер «не забудь» вверху Сегодня (если есть просроченные таблетки)
+  // ===========================================================================
+  function AlertsBanner({ activePillsCount, takenCount }) {
+    // Если все приняты — баннера нет
+    if (activePillsCount === 0 || takenCount >= activePillsCount) return null;
+    // Если сейчас вечер (после 22:00) и есть непринятые — показываем напоминание
+    const now = new Date();
+    const hour = now.getHours();
+    if (hour < 19) return null; // днём не дёргаем — таблетки разнесены по времени
+    return React.createElement("div", {
+      style: { padding: "9px 13px", background: C.warnSoft, border: `0.5px solid ${C.warn}66`,
+        borderRadius: 10, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }
+    },
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: C.warn } }, "💊 Не забудь таблетки"),
+        React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } }, "Сегодня осталось ", activePillsCount - takenCount, " из ", activePillsCount)
+      )
+    );
+  }
+
+  // ===========================================================================
+  // AnalysisReminder — напоминание сдать анализы за неделю до недели 7
+  // ===========================================================================
+  function AnalysisReminder() {
+    const today = new Date();
+    if (today < KEY_DATES.analysisRemindFrom || today > KEY_DATES.block7Start) return null;
+    const [dismissed, setDismissed] = useLS("analysisRemindDismissed", false);
+    if (dismissed) return null;
+    return React.createElement("div", {
+      style: { padding: "11px 13px", background: C.infoSoft, border: `0.5px solid ${C.info}66`,
+        borderRadius: 10, marginBottom: 10 }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+        React.createElement("div", { style: { flex: 1 } },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.info, marginBottom: 4 } }, "🩸 Время сдать анализы"),
+          React.createElement("div", { style: { fontSize: 11, color: C.text, lineHeight: 1.55 } },
+            "До недели 7 — нужно сдать: ОАК, ферритин, железо, B12, витамин D, цинк, ALT, AST, GGTP, креатинин, магний, калий, ТТГ."
+          )
+        ),
+        React.createElement("button", { onClick: () => setDismissed(true),
+          style: { background: "none", border: "none", fontSize: 14, color: C.textL, cursor: "pointer", padding: 0, fontFamily: "inherit", flexShrink: 0 } }, "✕")
+      )
+    );
+  }
+
+  // ===========================================================================
+  // BackupReminder — мягкое напоминание про бэкап.
+  // Показывается если:
+  //   - бэкапа никогда не было И есть какие-то данные (хотя бы что-то отмечено)
+  //   - последний бэкап был >14 дней назад
+  //   - сегодня воскресенье вечером (после 19:00) И бэкап >7 дней назад
+  // ===========================================================================
+  function BackupReminder({ setTab }) {
+    const [dismissedKey, setDismissedKey] = useLS("backupReminderDismissed", "");
+
+    let lastBackup = null;
+    try {
+      const raw = localStorage.getItem("lastBackupAt");
+      if (raw) lastBackup = new Date(JSON.parse(raw));
+    } catch {}
+
+    const now = new Date();
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const dow = today.getDay(); // 0=вс, 1=пн, ...
+    const hour = now.getHours();
+    const isSundayEvening = dow === 0 && hour >= 19;
+
+    const daysSinceBackup = lastBackup ? Math.floor((now - lastBackup) / 86400000) : null;
+
+    // Сделать ключ "когда было закрыто" — чтобы можно было закрыть на день
+    // dismissedKey содержит ISO дату когда закрыли — если совпадает с сегодня, не показываем
+    const todayISO = today.toISOString().slice(0, 10);
+    if (dismissedKey === todayISO) return null;
+
+    // Определяем нужно ли показывать
+    let kind = null; // "sunday" | "old" | "very_old" | "never"
+    if (!lastBackup) {
+      // Проверяем, есть ли вообще какие-то данные (не пустое приложение)
+      const hasAnyData = localStorage.length > 5; // больше базовых ключей
+      if (hasAnyData && isSundayEvening) kind = "never";
+    } else if (daysSinceBackup > 14) {
+      kind = "very_old";
+    } else if (isSundayEvening && daysSinceBackup >= 7) {
+      kind = "sunday";
+    }
+
+    if (!kind) return null;
+
+    const msg = {
+      never: { color: C.warn, bg: C.warnSoft, title: "💾 Сделай первый бэкап",
+        text: "Вечер воскресенья — хорошее время. Займёт 5 секунд: Настройки → Данные → ⬇ Скачать копию." },
+      sunday: { color: C.olive, bg: C.oliveSoft, title: "💾 Воскресный бэкап",
+        text: `Прошло ${daysSinceBackup} дн. с последней копии. Хороший момент чтобы обновить.` },
+      very_old: { color: C.warn, bg: C.warnSoft, title: "⚠ Давно не было бэкапа",
+        text: `${daysSinceBackup} дн. без копии — пора обновить. Настройки → Данные → ⬇ Скачать копию.` },
+    }[kind];
+
+    return React.createElement("div", {
+      style: { padding: "11px 13px", background: msg.bg, border: `0.5px solid ${msg.color}55`,
+        borderRadius: 10, marginBottom: 10 }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+        React.createElement("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => setTab && setTab("settings") },
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: msg.color, marginBottom: 4 } }, msg.title),
+          React.createElement("div", { style: { fontSize: 11, color: C.text, lineHeight: 1.55 } }, msg.text)
+        ),
+        React.createElement("button", { onClick: () => setDismissedKey(todayISO),
+          style: { background: "none", border: "none", fontSize: 14, color: C.textL, cursor: "pointer", padding: 0, fontFamily: "inherit", flexShrink: 0 } }, "✕")
+      )
+    );
+  }
+
+  // ===== ВКЛАДКА "ПЛАН" =====
+  // 9 недель восстановления (25 мая — 26 июля). Каждая неделя имеет имя и фокус.
+  // Текущая неделя подсвечивается автоматически по дате.
+  // 5 "волн подключения" — это активности, которые стартуют в конкретные даты.
+  const PLAN_BLOCKS = [
+    {
+      n: 1, from: "2026-05-25", to: "2026-05-31",
+      title: "25 — 31 мая",
+      subtitle: "Вход в режим",
+      goal: "Стабилизировать сон, ритм еды и питьё воды. Подключить первые добавки. Без перегруза.",
+      sections: [
+        { h: "Что подключается на этой неделе", items: [
+          "СБ 30 мая — старт: Форлакс (15:00, отдельно от таблеток) + Zinkorot 25 мг (20:00)"
+        ], ok: true },
+        { h: "Уже принимаешь стабильно", items: [
+          "Дуксет 60 мг утром натощак (09:00)",
+          "Ярина в 21:00"
+        ]},
+        { h: "Активность", items: [
+          "Прогулки вечером (с собакой до 27 мая, потом одной)",
+          "Зал и курс таз. дна — пока НЕ начинаем",
+          "Главное: восстановить ритм, ложиться в 22:00, вставать в 8:00"
+        ]},
+        { h: "Купить до 2 июня", items: [
+          "Gentle Iron 25 мг + витамин C (старт 2 июня)",
+          "Перфектил, Омега-3, Витамин D (старт 6 июня)",
+          "Ниацинамид 500 мг (старт 6 июня)",
+          "A+E Medana, Цистениум, Био Фимейл (старт 8 июня)"
+        ]},
+        { h: "Цели на конец недели", items: [
+          "Стабильный режим сна 23:00—08:00",
+          "Дневник состояния заполнен 5+ дней из 7",
+          "Белок 80+ г/день к концу недели"
+        ], ok: true },
+      ]
+    },
+    {
+      n: 2, from: "2026-06-01", to: "2026-06-07",
+      title: "1 — 7 июня",
+      subtitle: "Подключение нутриентов",
+      goal: "Добавить железо (через день), затем обеденный и вечерний блоки. Главное — ЖКТ должен справиться.",
+      sections: [
+        { h: "Что подключается", items: [
+          "ВТ 2 июня — Gentle Iron 25 мг + витамин C (08:15 натощак, через день: вт/чт/сб)",
+          "СБ 6 июня — обед: Перфектил + Омега-3 + Витамин D (пн/ср/сб)",
+          "СБ 6 июня — ужин: Ниацинамид 500 мг"
+        ], ok: true },
+        { h: "Важно про Перфектил", items: [
+          "Только после полноценного обеда (натощак — тошнота)",
+          "В составе уже есть железо, цинк, B-группа — поэтому между ним и отдельным железом разрыв (у нас железо утром, Перфектил в обед — ок)",
+          "Если тошнит — попробовать с большим количеством воды"
+        ], warn: true },
+        { h: "Железо — главные правила", items: [
+          "08:15 натощак, за 30–45 мин до завтрака",
+          "Без кофе/чая/молочного 1–2 ч до и после",
+          "Через день (вт/чт/сб) до 15 июня, ежедневно с 16 июня",
+          "Чёрный стул — норма. Подробнее: Здоровье → Железо и ЖКТ"
+        ], warn: true },
+        { h: "Цели на конец недели", items: [
+          "Перфектил переносится без тошноты",
+          "Железо переносится (следим за ЖКТ, Форлакс помогает)",
+          "Месячные ожидаются ~8 июня — записать факт"
+        ], ok: true },
+      ]
+    },
+    {
+      n: 3, from: "2026-06-08", to: "2026-06-14",
+      title: "8 — 14 июня",
+      subtitle: "Вечерний блок и зал",
+      goal: "Подключить A+E, Цистениум, Био Фимейл и начать силовые. Слушать тело.",
+      sections: [
+        { h: "Что подключается", items: [
+          "ПН 8 июня — вечер: A+E Medana 2 капс; на ночь: Цистениум + Био Фимейл",
+          "СР 10 июня — Зал 18:00 (разминка 10 мин + силовая 40 мин)",
+          "Железо: с 16 июня переходит на ежедневный приём"
+        ], ok: true },
+        { h: "Железо — главные правила", items: [
+          "08:15 натощак, за 30–45 мин до завтрака",
+          "Без кофе/чая/молочного 1–2 ч до и после",
+          "До 15 июня — вт/чт/сб; с 16 июня — ежедневно",
+          "A+E держать отдельно от витамина C/селена (поэтому A+E вечером)"
+        ], warn: true },
+        { h: "Месячные на этой неделе", items: [
+          "Ожидаются ~8 июня (кровотечение отмены в перерыве Ярины)",
+          "Первые 3 дня — лёгкая интенсивность",
+          "В ПН 8 июня зал НЕ начинаем. Первая силовая = СР 10 июня"
+        ]},
+        { h: "Зал — старт", items: [
+          "Программа: 10 мин разминка + 40 мин силовая",
+          "Минимальные веса! Запас 3-4 повтора",
+          "Выдох на усилии, не задерживай дыхание",
+          "Без жима лёжа, без приседа со штангой пока"
+        ]},
+      ]
+    },
+    {
+      n: 4, from: "2026-06-15", to: "2026-06-21",
+      title: "15 — 21 июня",
+      subtitle: "Закрепление",
+      goal: "Все добавки и активности уже подключены. Закрепить ритм, добавить бег/ходьбу.",
+      sections: [
+        { h: "Что подключается", items: [
+          "ПН 15 июня — Курс таз. дна (6 раз в неделю, 30 мин, отдых в вс)",
+          "ПН 15 июня — Бег/ходьба 1 раз в неделю (по самочувствию)",
+          "С 16 июня — железо переходит на ежедневный приём",
+          "Начать с быстрой ходьбы или incline walking"
+        ], ok: true },
+        { h: "Курс таз. дна", items: [
+          "ПН-СБ по 30 мин в 18:00 (в дни зала — после силовой)",
+          "Воскресенье — отдых",
+          "Главное правило: РАССЛАБЛЕНИЕ, не усилие",
+          "Если боль усилилась — снижай интенсивность, не бросай"
+        ]},
+        { h: "Полный режим работает", items: [
+          "Все таблетки по расписанию",
+          "Зал ср+пт + таз. дно после",
+          "Курс таз. дна 6/7 дней",
+          "Прогулки вечером"
+        ]},
+        { h: "Что отслеживать", items: [
+          "Энергия — должна постепенно расти",
+          "ЖКТ — стул должен быть мягким (Форлакс работает)",
+          "Тренировки — без боли в тазовом дне после"
+        ]},
+      ]
+    },
+    {
+      n: 5, from: "2026-06-22", to: "2026-06-28",
+      title: "22 — 28 июня",
+      subtitle: "Полная нагрузка",
+      goal: "Железо уже на ежедневном приёме (с 16 июня). Закрепляем полный режим.",
+      sections: [
+        { h: "Режим железа", items: [
+          "Железо ежедневно в 08:15 натощак (перешли с 16 июня)",
+          "Без кофе/чая/молочного с 07:45 до завтрака — каждый день",
+          "Утренний чай/кофе — через 1–2 ч после железа"
+        ], warn: true },
+        { h: "Месячные на следующей неделе", items: [
+          "Прогноз: 6—10 июля",
+          "Заранее: тампоны/прокладки, болеутоляющее если нужно"
+        ]},
+        { h: "Контрольный чек", items: [
+          "Сравнить настроение/энергию с началом плана (неделя 1)",
+          "Заметки в дневнике: что улучшилось, что нет",
+          "Подготовиться к анализам (записать когда сдавать)"
+        ]},
+      ]
+    },
+    {
+      n: 6, from: "2026-06-29", to: "2026-07-05",
+      title: "29 июня — 5 июля",
+      subtitle: "Перед анализами",
+      goal: "Подготовиться к контрольным анализам. На следующей неделе — сдача и оценка прогресса.",
+      sections: [
+        { h: "Подготовка к анализам", items: [
+          "Записаться в лабораторию (если ещё не)",
+          "Список: ОАК, ферритин, железо, B12, фолат, ТТГ, витамин D, цинк, ALT/AST/GGTP, креатинин",
+          "Сдавать в начале следующей недели (понедельник 6 июля)",
+          "За 12 часов до анализов — не есть, можно воду"
+        ], ok: true },
+        { h: "Месячные", items: [
+          "Ожидаются: 6—10 июля (понедельник)",
+          "В дни 1-3 месячных — прогулка вместо зала автоматически"
+        ]},
+        { h: "Что отметить в дневнике", items: [
+          "Как изменилось самочувствие за месяц",
+          "Стабильность ЖКТ",
+          "Энергия для тренировок"
+        ]},
+      ]
+    },
+    {
+      n: 7, from: "2026-07-06", to: "2026-07-12",
+      title: "6 — 12 июля",
+      subtitle: "Анализы и оценка",
+      goal: "Сдать контрольные анализы, оценить динамику ферритина и других показателей.",
+      sections: [
+        { h: "Анализы (ПН 6 июля)", items: [
+          "ОАК с лейкоформулой",
+          "Ферритин (главное — должен подрасти с 28 до 40+)",
+          "Железо сывороточное",
+          "Витамин D 25(OH)",
+          "B12, фолиевая кислота",
+          "ТТГ",
+          "Цинк, магний (если врач назначил)",
+          "Печёночные пробы (ALT, AST, GGTP) — на фоне Дуксета"
+        ], ok: true },
+        { h: "Что значит результат", items: [
+          "Ферритин 30—50 — норма, продолжаем железо",
+          "Ферритин 50+ — отлично, можно снизить дозу",
+          "Ферритин не подрос — обсудить дозу или форму с врачом",
+          "Витамин D 30—60 нг/мл — норма",
+          "Цинк в норме — можно отменить отдельный приём"
+        ]},
+        { h: "День C доступен", items: [
+          "ПН 6 июля — открывается День C (ягодицы + ноги, высокая интенсивность)",
+          "Раз в 2 недели вместо Дня A или B — не в дополнение!",
+          "Только при хорошем самочувствии и достаточно сна"
+        ]},
+      ]
+    },
+    {
+      n: 8, from: "2026-07-13", to: "2026-07-19",
+      title: "13 — 19 июля",
+      subtitle: "Корректировка",
+      goal: "На основании анализов — корректировать дозировки. Подготовиться к визиту к трихологу.",
+      sections: [
+        { h: "Корректировки по результатам", items: [
+          "Если ферритин <40 — продолжаем железо ежедневно",
+          "Если ферритин >50 — можно через день",
+          "Если витамин D <30 — увеличить до 5000 МЕ",
+          "Если цинк в норме — отдельный курс можно завершить"
+        ], ok: true },
+        { h: "Подготовка к трихологу", items: [
+          "Фото волос: пробор, виски, макушка — при том же освещении что в начале плана",
+          "Результаты анализов распечатать",
+          "Список вопросов: динамика выпадения, новые волоски, нужен ли миноксидил, можно ли снизить Перфектил"
+        ]},
+        { h: "Самооценка прогресса", items: [
+          "Что улучшилось за 8 недель",
+          "Что осталось без изменений",
+          "Что хочется изменить в плане на следующий период"
+        ]},
+      ]
+    },
+    {
+      n: 9, from: "2026-07-20", to: "2026-07-26",
+      title: "20 — 26 июля",
+      subtitle: "Финиш и удержание",
+      goal: "Закрепить новые привычки. Решить что продолжать после плана. Не «откатиться».",
+      sections: [
+        { h: "Что точно продолжать после плана", items: [
+          "Режим сна 23:00—08:00",
+          "Белок 90+ г/день",
+          "Дуксет и Ярина без изменений (если не сказал врач)",
+          "Витамин D осенью—весной",
+          "Дневник состояния (хотя бы 1 раз в неделю)"
+        ], ok: true },
+        { h: "Что обсудить с врачами", items: [
+          "Трихолог — дальнейший план (Перфектил, миноксидил, ниацинамид)",
+          "Гастроэнтеролог — нужно ли продолжать Форлакс",
+          "Гинеколог — насколько долго Ярина",
+          "Терапевт — длительный курс железа или достаточно"
+        ]},
+        { h: "Подведение итогов плана", items: [
+          "Сравнить начальные и конечные анализы",
+          "Сравнить начальные и конечные фото волос",
+          "Записать главные выводы за 9 недель",
+          "Поставить цели на следующие 3 месяца"
+        ], ok: true },
+      ]
+    },
+  ];
+
+  function PlanTab() {
+    const [openBlock, setOpenBlock] = useState(null);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // currentBlockIdx — номер недели, которая ИДЁТ ПРЯМО СЕЙЧАС (или null).
+    // null = план ещё не начался ИЛИ уже закончился.
+    // upcomingBlockIdx — номер недели которая стартует следующей (если план ещё не начался).
+    const currentBlockIdx = (() => {
+      for (let i = 0; i < PLAN_BLOCKS.length; i++) {
+        const b = PLAN_BLOCKS[i];
+        const from = mkd(b.from);
+        const to = mkd(b.to); to.setHours(23, 59, 59, 999);
+        if (today >= from && today <= to) return i;
+      }
+      return null;
+    })();
+    const beforePlan = today < mkd(PLAN_BLOCKS[0].from);
+    const afterPlan = today > mkd(PLAN_BLOCKS[PLAN_BLOCKS.length - 1].to);
+    // Какой блок раскрыть по умолчанию: текущий, или первый (если до старта), или последний (если после)
+    const defaultOpenIdx = currentBlockIdx !== null
+      ? currentBlockIdx
+      : beforePlan ? 0 : PLAN_BLOCKS.length - 1;
+
+    // По умолчанию — открыт текущий/ближайший блок.
+    useEffect(() => { if (openBlock === null) setOpenBlock(defaultOpenIdx); }, []);
+
+    return React.createElement("div", null,
+      // Шапка плана — с лисой в углу и прогресс-баром
+      React.createElement("div", {
+        style: { background: C.bgWarm, borderRadius: 14, padding: "14px 16px", marginBottom: 14, border: `0.5px solid ${C.border}`, position: "relative", overflow: "hidden" }
+      },
+        // Лиса в правом нижнем углу шапки
+        React.createElement("div", { style: { position: "absolute", right: -2, top: 6, bottom: 6, width: 86, opacity: 0.55, pointerEvents: "none",
+          display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 10, overflow: "hidden" } },
+          React.createElement(FoxImage, { kind: "path", size: 100 })
+        ),
+        React.createElement("div", { style: { position: "relative" } },
+          React.createElement("div", { style: { fontSize: 16, fontWeight: 600, color: C.text, marginBottom: 4 } }, "План восстановления"),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, lineHeight: 1.5 } }, "25 мая — 26 июля · 9 недель"),
+          // Статус плана
+          beforePlan && React.createElement("div", {
+            style: { fontSize: 11, color: C.oliveDeep, fontWeight: 600, marginTop: 6 }
+          },
+            (() => {
+              const dl = Math.round((mkd(PLAN_BLOCKS[0].from) - today) / 86400000);
+              return dl === 0 ? "🌱 Сегодня старт!" : dl === 1 ? "🌱 Завтра старт!" : `🌱 До старта ${dl} ${dl >= 2 && dl <= 4 ? 'дня' : 'дней'}`;
+            })()
+          ),
+          afterPlan && React.createElement("div", {
+            style: { fontSize: 11, color: C.sandDeep, fontWeight: 600, marginTop: 6 }
+          }, "✓ План завершён"),
+          // Прогресс-бар: 9 полосок. Если план ещё не начался — все приглушённые.
+          React.createElement("div", { style: { display: "flex", gap: 3, marginTop: 11, height: 4 } },
+            PLAN_BLOCKS.map((_, i) => React.createElement("div", { key: i, style: {
+              flex: 1,
+              background: i === currentBlockIdx ? C.olive
+                : (currentBlockIdx !== null && i < currentBlockIdx) ? C.sand + "66"
+                : afterPlan ? C.sand + "66"
+                : C.border,
+              borderRadius: 2
+            }}))
+          ),
+          React.createElement("div", { style: { fontSize: 11, color: C.text, marginTop: 9, fontStyle: "italic", lineHeight: 1.5 } }, "Организм не «сломан» — он хронически напряжён. Один шаг за раз.")
+        )
+      ),
+
+      // Список блоков
+      PLAN_BLOCKS.map((b, i) => {
+        const isCurrent = i === currentBlockIdx;
+        const isPast = today > (() => { const d = mkd(b.to); d.setHours(23, 59, 59, 999); return d; })();
+        const isUpcoming = !isCurrent && !isPast;
+        const isOpen = openBlock === i;
+        const borderClr = isCurrent ? C.olive : C.border;
+        const bgClr = isCurrent ? C.oliveSoft : C.card;
+        return React.createElement("div", {
+          key: b.n,
+          style: { background: bgClr, borderRadius: 12, marginBottom: 8,
+            border: isCurrent ? `1.5px solid ${C.olive}` : `0.5px solid ${C.border}`,
+            overflow: "hidden", position: "relative" }
+        },
+          // Декор в правом верхнем углу текущей недели — следы лапок (символ движения)
+          isCurrent && React.createElement("div", { style: { position: "absolute", right: 8, top: 8, opacity: 0.3, pointerEvents: "none" } },
+            React.createElement(FoxImage, { kind: "tracks", size: 36 })
+          ),
+          // Заголовок блока — кликабельный
+          React.createElement("button", {
+            onClick: () => setOpenBlock(isOpen ? null : i),
+            style: { width: "100%", padding: "12px 14px", background: "none", border: "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit", position: "relative" }
+          },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
+              React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 2 } },
+                  React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: C.textM, letterSpacing: 0.5 } }, "НЕДЕЛЯ ", b.n),
+                  isCurrent && React.createElement("div", { style: { fontSize: 9, fontWeight: 600, color: "#fff", background: C.olive, padding: "2px 7px", borderRadius: 4 } }, "СЕЙЧАС"),
+                  isPast && !isCurrent && React.createElement("div", { style: { fontSize: 9, fontWeight: 600, color: C.textL, background: C.bgWarm, padding: "2px 7px", borderRadius: 4 } }, "✓ Пройдён")
+                ),
+                React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: isCurrent ? C.oliveDeep : C.text } }, b.title),
+                React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2, fontStyle: "italic" } }, b.subtitle)
+              ),
+              React.createElement("div", { style: { fontSize: 14, color: C.textL, flexShrink: 0 } }, isOpen ? "▲" : "▼")
+            )
+          ),
+
+          // Содержимое блока (если открыт)
+          isOpen && React.createElement("div", { style: { padding: "0 14px 14px" } },
+            // Цель недели
+            React.createElement("div", {
+              style: { background: C.sandSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 10, border: `0.5px solid ${C.sand}33` }
+            },
+              React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: C.sandDeep, letterSpacing: 0.5, marginBottom: 4 } }, "ЦЕЛЬ НЕДЕЛИ"),
+              React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.6 } }, b.goal)
+            ),
+
+            // Секции
+            b.sections.map((s, si) => {
+              const accentClr = s.warn ? C.warn : s.ok ? C.sand : C.bark;
+              const accentBg = s.warn ? C.warnSoft : s.ok ? C.sandSoft : C.barkSoft;
+              return React.createElement("div", {
+                key: si,
+                style: { background: accentBg, borderRadius: 10, padding: "10px 12px", marginBottom: 8, border: `1px solid ${accentClr}33` }
+              },
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: accentClr, marginBottom: 6 } }, s.h),
+                s.items.map((item, ii) => React.createElement("div", {
+                  key: ii,
+                  style: { display: "flex", gap: 8, marginBottom: ii < s.items.length - 1 ? 5 : 0 }
+                },
+                  React.createElement("div", { style: { width: 4, height: 4, borderRadius: "50%", background: accentClr, marginTop: 7, flexShrink: 0 } }),
+                  React.createElement("div", { style: { fontSize: 12, color: C.text, lineHeight: 1.5 } }, item)
+                ))
+              );
+            })
+          )
+        );
+      })
+    );
+  }
+
+    function App() {
+    const [tab, setTab] = useState("today");
+    const [selDay, setSelDay] = useState(0);
+    // По плану — силовые ср+пт. workoutDays = [2, 4] (среда + пятница)
+    const [workoutDays, setWorkoutDays] = useLS("wDaysV3", [2, 4]);
+    const [weekLog, setWeekLog] = useLS("wLog5", {});
+    const [packAnchor] = useLS("packAnchorV2", defaultPackAnchor());
+    // На Ярине независимого цикла нет: «месячные» = кровотечение отмены, выводится из пачки.
+    // Поэтому источник для расчёта месячных — это якорь ПАЧКИ (единый источник правды).
+    const cycleAnchor = packAnchor;
+    const [periodOverrides] = useLS("periodOverridesV1", {});
+    const [badDay, setBadDay] = useLS("badDayToday_" + new Date().toDateString(), false);
+    const [userName] = useLS("userName", "Маша");
+    const [onboardingDone, setOnboardingDone] = useState(() => {
+      try { return localStorage.getItem("onboardingDone") === "true"; } catch { return false; }
+    });
+
+    const today = new Date();
+    const todayDow = today.getDay() === 0 ? 6 : today.getDay() - 1;
+    const wk = `w${Math.floor(Date.now() / 6048e5)}`;
+    const doneCount = (weekLog[wk] || []).length;
+    const markDay = (dow) => {
+      const cur = weekLog[wk] || [];
+      const up = cur.includes(dow) ? cur.filter((d) => d !== dow) : [...cur, dow];
+      setWeekLog({ ...weekLog, [wk]: up });
+    };
+    const DR = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+    const dayCAvailable = today >= KEY_DATES.dayCStart;
+    useEffect(() => { if (!dayCAvailable && selDay === 2) setSelDay(0); }, [dayCAvailable, selDay]);
+
+    // Текущая неделя плана — для шапки. null если до старта или после конца.
+    const currentBlock = useMemo(() => {
+      const t = new Date();
+      t.setHours(0, 0, 0, 0);
+      for (let i = 0; i < PLAN_BLOCKS.length; i++) {
+        const b = PLAN_BLOCKS[i];
+        const from = mkd(b.from);
+        const to = mkd(b.to); to.setHours(23, 59, 59, 999);
+        if (t >= from && t <= to) {
+          const dayInBlock = Math.floor((t - from) / 86400000) + 1;
+          const blockTotal = Math.floor((to - from) / 86400000) + 1;
+          return { n: b.n, dayInBlock, blockTotal, subtitle: b.subtitle };
+        }
+      }
+      return null;
+    }, []);
+
+    if (!onboardingDone) {
+      return React.createElement(OnboardingScreen, { onDone: () => setOnboardingDone(true) });
+    }
+
+    const tabs = [
+      { id: "today", l: "Сегодня", icon: "today" },
+      { id: "plan", l: "План", icon: "plan" },
+      { id: "sport", l: "Спорт", icon: "sport" },
+      { id: "health", l: "Здоровье", icon: "health" },
+      { id: "settings", l: "Настр.", icon: "settings" },
+    ];
+
+    // Проверка: есть ли алерт-точки над вкладками
+    const hour = today.getHours();
+    let todayHasAlert = false;
+    if (hour >= 19) {
+      try {
+        const taken = JSON.parse(localStorage.getItem("pillsTaken_" + new Date().toLocaleDateString("ru-RU")) || "{}");
+        const t = new Date(); t.setHours(0, 0, 0, 0);
+        const active = activePillsOn(t, packAnchor);
+        const takenN = active.filter(p => taken[p.id]).length;
+        todayHasAlert = takenN < active.length;
+      } catch {}
+    }
+
+    return React.createElement("div", {
+      style: {
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        background: C.bg, minHeight: "100vh", color: C.text,
+        maxWidth: 430, margin: "0 auto", paddingBottom: 92
+      }
+    },
+      // ===== ШАПКА =====
+      React.createElement("div", {
+        style: { padding: "52px 18px 16px", background: C.bgWarm, borderBottom: `0.5px solid ${C.border}`, position: "relative", overflow: "hidden" }
+      },
+        React.createElement("div", { style: { position: "absolute", right: -10, bottom: -8, opacity: 0.55, pointerEvents: "none" } },
+          React.createElement(FoxImage, { kind: "main", size: 88 })
+        ),
+        React.createElement("div", { style: { position: "relative" } },
+          React.createElement("div", { style: { fontSize: 17, fontWeight: 600, color: C.text } }, "Привет, ", userName),
+          React.createElement("div", { style: { fontSize: 11, color: C.textM, marginTop: 2 } },
+            DR[todayDow], " · ", new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long" }),
+            currentBlock && React.createElement(React.Fragment, null,
+              " · ",
+              React.createElement("span", { style: { color: C.oliveDeep, fontWeight: 600 } },
+                "Неделя ", currentBlock.n, ", день ", currentBlock.dayInBlock, "/", currentBlock.blockTotal
+              )
+            )
+          )
+        )
+      ),
+
+      // ===== КОНТЕНТ ВКЛАДКИ =====
+      React.createElement("div", { style: { padding: "14px 14px 0" } },
+        tab === "today" && React.createElement(TodayTab, { todayDow, DR, setTab, workoutDays, cycleAnchor, packAnchor, periodOverrides, badDay, userName }),
+        tab === "plan" && React.createElement(PlanTab, null),
+        tab === "sport" && React.createElement(SportTab, { workoutDays, setWorkoutDays, doneCount, weekLog, markDay, DR, todayDow, selDay, setSelDay, dayCAvailable, cycleAnchor, periodOverrides }),
+        tab === "health" && React.createElement(HealthTab, { cycleAnchor, packAnchor, periodOverrides }),
+        tab === "settings" && React.createElement(SettingsTab, { badDay, setBadDay, setOnboardingDone })
+      ),
+
+      // ===== НИЖНЯЯ НАВИГАЦИЯ =====
+      // Иконки в фиксированном контейнере 32px — чтобы текст под ними был на одной высоте.
+      React.createElement("div", {
+        style: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%",
+          maxWidth: 430, background: C.card, borderTop: `0.5px solid ${C.border}`, display: "flex", padding: "6px 0 18px" }
+      },
+        tabs.map(t => {
+          const active = tab === t.id;
+          const hasAlert = t.id === "today" && todayHasAlert;
+          return React.createElement("button", {
+            key: t.id, onClick: () => setTab(t.id),
+            "aria-label": t.l, "aria-current": active ? "page" : undefined,
+            style: { flex: 1, background: "none", border: "none", cursor: "pointer",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "4px 0", position: "relative", fontFamily: "inherit" }
+          },
+            // Фиксированная высота контейнера иконки = 32px, центрирование
+            React.createElement("div", {
+              style: { position: "relative", height: 32, display: "flex", alignItems: "center", justifyContent: "center" }
+            },
+              React.createElement(FoxNavIcon, { kind: t.icon, size: 30, active }),
+              hasAlert && React.createElement("div", {
+                style: { position: "absolute", top: 2, right: "calc(50% - 16px)", width: 8, height: 8, borderRadius: "50%", background: C.olive, border: `1.5px solid ${C.card}` }
+              })
+            ),
+            React.createElement("div", {
+              style: { fontSize: 10, fontFamily: "inherit", color: active ? C.oliveDeep : C.textL,
+                fontWeight: active ? 600 : 400, lineHeight: 1 }
+            }, t.l),
+            active && React.createElement("div", { style: { width: 16, height: 2, borderRadius: 1, background: C.olive, marginTop: 1 } })
+          );
+        })
+      )
+    );
+  }
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(React.createElement(App, null));
+})();
