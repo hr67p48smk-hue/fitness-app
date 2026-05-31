@@ -1,0 +1,15 @@
+{
+  "name": "План восстановления",
+  "short_name": "Лиса",
+  "description": "Личный план: препараты, цикл, спорт, здоровье",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F7F2E8",
+  "theme_color": "#F7F2E8",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

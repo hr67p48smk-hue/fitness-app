@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Мой план приёма</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Golos+Text:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f7f2e9; --bg2:#efe7d8; --ink:#173a34; --ink-soft:#4a5b56;
+    --line:#e3dac9; --card:#fffdf8; --brand:#155e54; --brand-d:#0e423b;
+    --dawn:#df8a6e; --morn:#d99a37; --noon:#6a9d61; --after:#2f8c8c;
+    --dinner:#c56b46; --dusk:#7a68ab; --night:#46568c;
+    --pending:#b7ad99;
+    --shadow:0 8px 24px -14px rgba(20,50,44,.45);
+    --radius:18px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:'Golos Text',-apple-system,system-ui,sans-serif;
+    color:var(--ink); background:var(--bg);
+    background-image:radial-gradient(120% 80% at 50% -10%, #fbf7ee 0%, var(--bg) 42%, var(--bg2) 100%);
+    background-attachment:fixed;
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+    padding:0 0 56px;
+  }
+  .wrap{max-width:560px; margin:0 auto; padding:26px 18px 0}
+
+  /* header */
+  .kicker{font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); font-weight:600; margin-bottom:8px}
+  h1{font-family:'Playfair Display',Georgia,serif; font-weight:700;
+    font-size:clamp(30px,8.6vw,40px); line-height:1.04; letter-spacing:-.01em;
+    color:var(--ink)}
+  h1 em{font-style:italic; color:var(--brand)}
+  .lede{margin-top:12px; color:var(--ink-soft); font-size:14.5px; max-width:46ch}
+
+  .statusbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    margin-top:18px}
+  .today-pill{display:inline-flex; align-items:center; gap:8px;
+    background:var(--brand); color:#fdf6e7; padding:8px 14px; border-radius:999px;
+    font-weight:600; font-size:13.5px; box-shadow:var(--shadow)}
+  .today-pill .dot{width:7px;height:7px;border-radius:50%;background:#8fd6c4;
+    box-shadow:0 0 0 4px rgba(143,214,196,.25); animation:pulse 2.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .count{font-size:13px; color:var(--ink-soft)}
+  .count b{color:var(--ink)}
+
+  .toggle{margin-left:auto; display:inline-flex; background:#fff; border:1px solid var(--line);
+    border-radius:999px; padding:3px; box-shadow:0 2px 8px -6px rgba(0,0,0,.3)}
+  .toggle button{font-family:inherit; border:0; background:transparent; cursor:pointer;
+    padding:7px 13px; border-radius:999px; font-size:13px; font-weight:600; color:var(--ink-soft)}
+  .toggle button.on{background:var(--brand); color:#fdf6e7}
+
+  /* section heading */
+  .sec{margin-top:34px}
+  .sec-h{display:flex; align-items:baseline; gap:11px; margin-bottom:14px}
+  .sec-h .no{font-family:'Playfair Display',serif; font-style:italic; font-weight:500;
+    font-size:19px; color:var(--brand)}
+  .sec-h h2{font-size:17px; font-weight:700; letter-spacing:-.01em}
+  .sec-h .sub{font-size:12.5px; color:var(--ink-soft); margin-left:auto}
+
+  /* rollout timeline */
+  .rail{position:relative; padding-left:6px}
+  .stage{position:relative; padding:0 0 4px 26px; margin-bottom:14px}
+  .stage::before{content:""; position:absolute; left:7px; top:22px; bottom:-14px; width:2px;
+    background:linear-gradient(var(--line), var(--line))}
+  .stage:last-child::before{display:none}
+  .node{position:absolute; left:0; top:4px; width:16px; height:16px; border-radius:50%;
+    background:#fff; border:3px solid var(--after); box-shadow:0 0 0 4px rgba(47,140,140,.12)}
+  .stage.now .node{border-color:var(--brand); background:var(--brand)}
+  .stage .date{font-weight:700; font-size:13.5px; letter-spacing:.01em}
+  .stage .date span{font-weight:500; color:var(--ink-soft); font-size:12.5px}
+  .stage .meds{margin-top:7px; display:flex; flex-wrap:wrap; gap:6px}
+  .tag{font-size:12.5px; font-weight:500; background:#fff; border:1px solid var(--line);
+    padding:5px 10px; border-radius:9px; color:var(--ink)}
+  .stage.now .tag{background:#eaf4f1; border-color:#cfe6df; color:var(--brand-d)}
+
+  /* day timeline */
+  .block{position:relative; background:var(--card); border:1px solid var(--line);
+    border-radius:var(--radius); padding:15px 16px 15px 18px; margin-bottom:13px;
+    box-shadow:var(--shadow); overflow:hidden;
+    opacity:0; transform:translateY(10px); animation:rise .5s forwards}
+  @keyframes rise{to{opacity:1; transform:none}}
+  .block::before{content:""; position:absolute; left:0; top:0; bottom:0; width:5px;
+    background:var(--acc)}
+  .block-top{display:flex; align-items:center; gap:11px; margin-bottom:11px}
+  .ico{width:34px; height:34px; border-radius:11px; display:grid; place-items:center;
+    background:color-mix(in srgb, var(--acc) 15%, #fff); color:var(--acc); flex:none}
+  .ico svg{width:19px; height:19px; stroke:currentColor; fill:none; stroke-width:1.7;
+    stroke-linecap:round; stroke-linejoin:round}
+  .block-top .name{font-weight:700; font-size:15px}
+  .block-top .time{font-size:12px; color:var(--ink-soft); font-weight:500}
+  .block-top .meal{margin-left:auto; font-size:11.5px; color:var(--acc); font-weight:600;
+    background:color-mix(in srgb, var(--acc) 12%, #fff); padding:4px 9px; border-radius:8px}
+
+  .item{display:flex; gap:11px; align-items:flex-start; padding:9px 0;
+    border-top:1px dashed var(--line); cursor:pointer; -webkit-tap-highlight-color:transparent}
+  .item:first-of-type{border-top:0}
+  .check{width:21px; height:21px; border-radius:7px; border:2px solid var(--line);
+    flex:none; margin-top:1px; display:grid; place-items:center; transition:.15s;
+    background:#fff}
+  .check svg{width:12px;height:12px; stroke:#fff; fill:none; stroke-width:3;
+    stroke-linecap:round; stroke-linejoin:round; opacity:0; transform:scale(.5); transition:.15s}
+  .item.taken .check{background:var(--acc); border-color:var(--acc)}
+  .item.taken .check svg{opacity:1; transform:none}
+  .item.taken .it-name{text-decoration:line-through; color:var(--ink-soft)}
+  .it-body{flex:1; min-width:0}
+  .it-name{font-weight:600; font-size:14.5px}
+  .it-name .dose{font-weight:500; color:var(--ink-soft); font-size:13px}
+  .it-how{font-size:12.5px; color:var(--ink-soft); margin-top:2px}
+  .badge{font-size:10.5px; font-weight:700; letter-spacing:.02em; padding:3px 7px;
+    border-radius:7px; white-space:nowrap; margin-top:1px; flex:none}
+  .badge.ongoing{background:#eaf4f1; color:var(--brand)}
+  .badge.soon{background:#f3ecdc; color:#9a7b2e}
+
+  /* pending state */
+  .item.pending{opacity:.5}
+  .item.pending .check{visibility:hidden}
+  body.mode-all .item.pending{opacity:1}
+  body.mode-all .item.pending .check{visibility:hidden}
+
+  /* rules */
+  .rules{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px}
+  .rule{display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--line);
+    border-radius:11px; padding:9px 12px; font-size:12.5px; font-weight:500; color:var(--ink)}
+  .rule svg{width:15px;height:15px; stroke:var(--brand); fill:none; stroke-width:1.7;
+    stroke-linecap:round; stroke-linejoin:round; flex:none}
+  .rule b{font-weight:700}
+
+  .foot{margin-top:26px; font-size:11.5px; color:var(--ink-soft); line-height:1.6;
+    border-top:1px solid var(--line); padding-top:14px}
+  .foot .hl{color:var(--brand); font-weight:600}
+</style>
+</head>
+<body class="mode-today">
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Личный план · обновляется по дате</div>
+    <h1>Мой день<br>и <em>ввод препаратов</em></h1>
+    <p class="lede">Сверху — с какого числа что добавлять. Ниже — распорядок дня от утра к ночи. Нажмите на препарат, чтобы отметить приём.</p>
+    <div class="statusbar">
+      <span class="today-pill"><span class="dot"></span><span id="todayLabel">сегодня</span></span>
+      <span class="count">принимаю сейчас: <b id="activeCount">—</b> из <b id="totalCount">—</b></span>
+      <span class="toggle">
+        <button id="btnToday" class="on">Сегодня</button>
+        <button id="btnAll">Весь план</button>
+      </span>
+    </div>
+  </header>
+
+  <!-- ROLLOUT -->
+  <section class="sec">
+    <div class="sec-h"><span class="no">i</span><h2>Лента ввода</h2><span class="sub">по одной группе раз в 3–4 дня</span></div>
+    <div class="rail">
+      <div class="stage now">
+        <div class="node"></div>
+        <div class="date">Уже принимаю <span>· продолжаю как обычно</span></div>
+        <div class="meds"><span class="tag">Ярина · 21:00</span><span class="tag">Дуксет · завтрак</span></div>
+      </div>
+      <div class="stage">
+        <div class="node"></div>
+        <div class="date">30 мая <span>· старт</span></div>
+        <div class="meds"><span class="tag">Форлакс</span><span class="tag">Zinkorot</span></div>
+      </div>
+      <div class="stage">
+        <div class="node"></div>
+        <div class="date">2 июня</div>
+        <div class="meds"><span class="tag">Gentle Iron</span><span class="tag">Витамин С</span></div>
+      </div>
+      <div class="stage">
+        <div class="node"></div>
+        <div class="date">6 июня</div>
+        <div class="meds"><span class="tag">Перфектил</span><span class="tag">Омега-3</span><span class="tag">Витамин D</span><span class="tag">Ниацинамид</span></div>
+      </div>
+      <div class="stage">
+        <div class="node"></div>
+        <div class="date">8 июня</div>
+        <div class="meds"><span class="tag">A+E Medana</span><span class="tag">Цистениум</span><span class="tag">Био Фимейл</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DAY -->
+  <section class="sec">
+    <div class="sec-h"><span class="no">ii</span><h2>Распорядок дня</h2><span class="sub" id="dayHint">подсвечено активное сегодня</span></div>
+    <div id="day"></div>
+  </section>
+
+  <!-- RULES -->
+  <section class="sec">
+    <div class="sec-h"><span class="no">iii</span><h2>Главные правила</h2></div>
+    <div class="rules">
+      <span class="rule"><svg viewBox="0 0 24 24"><path d="M12 3s5 5.5 5 9a5 5 0 0 1-10 0c0-3.5 5-9 5-9z"/></svg><b>1,5–2 л</b> воды в день</span>
+      <span class="rule"><svg viewBox="0 0 24 24"><path d="M4 8h13v4a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M17 9h2a2 2 0 0 1 0 4h-2"/></svg>Кофе/чай — <b>через 1–2 ч</b> после железа</span>
+      <span class="rule"><svg viewBox="0 0 24 24"><path d="M7 4h8l-1 5 1 11H7l1-11-1-5z"/></svg>Молочное и кальций — <b>отдельно</b> от железа и цинка (2 ч)</span>
+      <span class="rule"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>Без алкоголя — <b>печень</b></span>
+      <span class="rule"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3l9-16z"/><path d="M12 10v4M12 17h.01"/></svg>A+E + Омега + Ярина — лёгкое <b>разжижение крови</b></span>
+    </div>
+  </section>
+
+  <p class="foot">Это <span class="hl">справочная памятка</span>, а не назначение. Сверяйте дозы с инструкциями и назначениями врачей. Вид «Сегодня» автоматически меняется по календарю: то, что ещё не введено, помечено бейджем «с DD.MM».</p>
+
+</div>
+
+<script>
+const MONTHS=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+const MM=['01','02','03','04','05','06','07','08','09','10','11','12'];
+
+// time blocks (dawn -> night)
+const BLOCKS=[
+ {key:'fasting', name:'Утро · натощак', time:'за 30–60 мин до еды', meal:'натощак', acc:'var(--dawn)',
+  ico:'<path d="M12 4v3M5 9l2 2M19 9l-2 2M3 18h18M6 18a6 6 0 0 1 12 0"/>'},
+ {key:'breakfast', name:'Завтрак', time:'', meal:'с едой', acc:'var(--morn)',
+  ico:'<path d="M8 4v6a3 3 0 0 0 6 0V4M11 4v16"/><path d="M17 4c1.5 1 1.5 4 0 5v11"/>'},
+ {key:'lunch', name:'Обед', time:'', meal:'с жирами', acc:'var(--noon)',
+  ico:'<path d="M4 11h16a8 8 0 0 1-16 0z"/><path d="M12 11V4M9 4c0 2 0 3 0 3M15 4c0 2 0 3 0 3"/>'},
+ {key:'afternoon', name:'Полдник', time:'15:00–16:00', meal:'отдельно ±1–2 ч', acc:'var(--after)',
+  ico:'<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>'},
+ {key:'dinner', name:'Ужин', time:'', meal:'с жирами', acc:'var(--dinner)',
+  ico:'<path d="M5 4v16M5 4c2 0 2 4 0 6M19 4l-2 8h4l-2-8zM19 12v8"/>'},
+ {key:'yarina', name:'Ярина', time:'21:00', meal:'строго одно время', acc:'var(--dusk)',
+  ico:'<rect x="4" y="9" width="16" height="6" rx="3"/><path d="M12 9v6"/>'},
+ {key:'bed', name:'Перед сном', time:'', meal:'', acc:'var(--night)',
+  ico:'<path d="M20 14a8 8 0 1 1-9-10 7 7 0 0 0 9 10z"/>'},
+];
+
+// items: start = 'ongoing' or 'YYYY-MM-DD' (2026)
+const ITEMS=[
+ {b:'fasting', name:'Gentle Iron', dose:'25 мг', how:'+ Витамин С; без кофе/чая/молочного', start:'2026-06-02'},
+ {b:'fasting', name:'Витамин С', dose:'500 мг', how:'вместе с железом', start:'2026-06-02'},
+ {b:'breakfast', name:'Дуксет', dose:'60 мг', how:'с едой, в привычное время', start:'ongoing'},
+ {b:'lunch', name:'Перфектил', dose:'', how:'на полный желудок', start:'2026-06-06'},
+ {b:'lunch', name:'Омега-3', dose:'2 капс.', how:'с едой с жирами', start:'2026-06-06'},
+ {b:'lunch', name:'Витамин D', dose:'', how:'с едой с жирами', start:'2026-06-06'},
+ {b:'afternoon', name:'Форлакс', dose:'', how:'растворить в воде; отдельно от таблеток', start:'2026-05-30'},
+ {b:'dinner', name:'Zinkorot', dose:'25 мг', how:'с едой (иначе тошнит)', start:'2026-05-30'},
+ {b:'dinner', name:'Ниацинамид', dose:'500 мг', how:'с едой', start:'2026-06-06'},
+ {b:'dinner', name:'A+E Medana', dose:'2 капс.', how:'с жирами; отдельно от витамина С/селена', start:'2026-06-08'},
+ {b:'yarina', name:'Ярина', dose:'', how:'строго в одно и то же время', start:'ongoing'},
+ {b:'bed', name:'Цистениум', dose:'', how:'на ночь — дольше работает в пузыре', start:'2026-06-08'},
+ {b:'bed', name:'Био Фимейл', dose:'', how:'прохладной/тёплой (не горячей) водой', start:'2026-06-08'},
+];
+
+const today=new Date();
+const todayMid=new Date(today.getFullYear(),today.getMonth(),today.getDate());
+document.getElementById('todayLabel').textContent=today.getDate()+' '+MONTHS[today.getMonth()];
+
+function startDate(s){ if(s==='ongoing')return null; const[y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
+function isActive(it){ const sd=startDate(it.start); return sd===null || todayMid>=sd; }
+function badge(it){
+  if(it.start==='ongoing') return '<span class="badge ongoing">идёт</span>';
+  if(isActive(it)) return '';
+  const sd=startDate(it.start);
+  return '<span class="badge soon">с '+String(sd.getDate()).padStart(2,'0')+'.'+MM[sd.getMonth()]+'</span>';
+}
+
+const dayEl=document.getElementById('day');
+BLOCKS.forEach((bl,i)=>{
+  const its=ITEMS.filter(x=>x.b===bl.key);
+  if(!its.length)return;
+  const block=document.createElement('div');
+  block.className='block'; block.style.setProperty('--acc',bl.acc);
+  block.style.animationDelay=(i*0.06)+'s';
+  let html='<div class="block-top"><span class="ico"><svg viewBox="0 0 24 24">'+bl.ico+'</svg></span>'+
+    '<div><div class="name">'+bl.name+'</div>'+(bl.time?'<div class="time">'+bl.time+'</div>':'')+'</div>'+
+    (bl.meal?'<span class="meal">'+bl.meal+'</span>':'')+'</div>';
+  its.forEach(it=>{
+    const active=isActive(it);
+    html+='<div class="item'+(active?'':' pending')+'" data-active="'+active+'">'+
+      '<span class="check"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg></span>'+
+      '<div class="it-body"><div class="it-name">'+it.name+(it.dose?' <span class="dose">'+it.dose+'</span>':'')+'</div>'+
+      '<div class="it-how">'+it.how+'</div></div>'+badge(it)+'</div>';
+  });
+  block.innerHTML=html;
+  dayEl.appendChild(block);
+});
+
+// counts
+const total=ITEMS.length;
+const active=ITEMS.filter(isActive).length;
+document.getElementById('totalCount').textContent=total;
+document.getElementById('activeCount').textContent=active;
+
+// tap to mark taken (only active items)
+dayEl.addEventListener('click',e=>{
+  const it=e.target.closest('.item'); if(!it)return;
+  if(it.classList.contains('pending') && !document.body.classList.contains('mode-all'))return;
+  it.classList.toggle('taken');
+});
+
+// toggle today / all
+const bT=document.getElementById('btnToday'), bA=document.getElementById('btnAll'), hint=document.getElementById('dayHint');
+bT.onclick=()=>{document.body.className='mode-today'; bT.classList.add('on'); bA.classList.remove('on'); hint.textContent='подсвечено активное сегодня';};
+bA.onclick=()=>{document.body.className='mode-all'; bA.classList.add('on'); bT.classList.remove('on'); hint.textContent='показаны все препараты';};
+</script>
+</body>
+</html>
