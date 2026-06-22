@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Body Reset 🦊</title>
+
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="shortcut icon" href="./icon.png">
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Body Reset">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#EDE8DD">
+
+  <link rel="manifest" href="./manifest.json">
+
+  <!-- Instrument Light type: Inter (UI) · IBM Plex Mono (data) · Newsreader (verdicts). System fallbacks if offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@0,500;0,600;1,500&display=swap">
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <style>
+    /* Instrument Light base */
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; padding: 0; font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif; background: #F4F1E9; color: #2E2A24; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    input, textarea, button, select { font-family: inherit; }
+    ::-webkit-scrollbar { width: 0; height: 0; }                 /* hide scrollbars (chip rows) */
+    * { scrollbar-width: none; }
+    .ux-enter { animation: uxEnter .2s ease both; }
+    @keyframes uxEnter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+    /* ===== PRINT MODE — practical, not decorative ===== */
+    @media print {
+      body { background: #fff; }
+      /* hide fixed bottom nav + decorative fox images */
+      body > div > div:last-child[style*="fixed"], img[aria-hidden="true"] { display: none !important; }
+      /* expand container, drop shadows, flatten to B/W-friendly */
+      #root > div { max-width: 100% !important; padding-bottom: 0 !important; }
+      * { box-shadow: none !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      /* keep cards from breaking across pages */
+      [style*="border-radius"] { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./app.js"></script>
+  <!-- Самовосстановление: если приложение не поднялось — один раз чистим кэш/SW и перезагружаемся. -->
+  <script>
+    window.addEventListener("load", function () {
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js").catch(function () {});
+      }
+      setTimeout(function () {
+        var rootEl = document.getElementById("root");
+        var appOk = window.React && window.ReactDOM && rootEl && rootEl.children.length > 0;
+        if (appOk) { try { sessionStorage.removeItem("foxHealAttempt"); } catch (e) {} return; }
+        try {
+          if (sessionStorage.getItem("foxHealAttempt")) return;
+          sessionStorage.setItem("foxHealAttempt", "1");
+        } catch (e) {}
+        (async function () {
+          try {
+            if (window.caches) { var ks = await caches.keys(); await Promise.all(ks.map(function (k) { return caches.delete(k); })); }
+            if (navigator.serviceWorker) { var rs = await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(function (r) { return r.unregister(); })); }
+          } catch (e) {}
+          location.reload();
+        })();
+      }, 1200);
+    });
+  </script>
+</body>
+</html>
